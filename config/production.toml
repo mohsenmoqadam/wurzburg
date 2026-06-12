@@ -1,0 +1,52 @@
+[server]
+host = "0.0.0.0"
+port = 65001
+
+[swagger]
+enabled = true
+host = "0.0.0.0"
+port = 65002          
+path = "/swagger-ui"
+
+[database]
+active_driver = "postgres"
+
+[database.postgres]
+url = "postgres://postgres:password@localhost:5432/nuremberg"
+max_connections = 128
+min_connections = 64
+acquire_timeout_ms = 5000
+connect_timeout_ms = 5000
+idle_timeout_ms = 600000
+max_lifetime_ms = 1800000
+statement_cache_capacity = 100
+
+[database.oracle]
+url = "oracle://user:password@localhost:1521/XEPDB1"
+max_connections = 128
+min_connections = 64
+acquire_timeout_ms = 5000
+connect_timeout_ms = 5000
+idle_timeout_ms = 600000
+max_lifetime_ms = 1800000
+statement_cache_capacity = 100
+
+[redis]
+url = "redis://127.0.0.1:6379"
+pool_min_idle = 10
+pool_max_open = 100
+connection_timeout_ms = 1000
+response_timeout_ms = 500
+
+[telemetry]
+enabled = true
+service_name = "wurzburg"
+service_version = "1.0.0"
+environment = "production"
+otlp_endpoint = "http://localhost:4317"
+log_format = "pretty"
+log_level = "info"
+batch_max_queue = 16384
+batch_size = 2048
+batch_delay_ms = 5000
+sampling_ratio = 0.1

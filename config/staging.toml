@@ -1,0 +1,72 @@
+[server]
+host = "0.0.0.0"
+port = 65001
+
+[swagger]
+enabled = true
+host = "0.0.0.0"
+port = 65002          
+path = "/swagger-ui"
+
+[database]
+active_driver = "postgres"
+
+[database.postgres]
+url = "postgres://postgres:password@localhost:5432/nuremberg"
+max_connections = 8
+min_connections = 4
+acquire_timeout_ms = 5000
+connect_timeout_ms = 5000
+idle_timeout_ms = 600000
+max_lifetime_ms = 1800000
+statement_cache_capacity = 100
+
+[database.oracle]
+url = "oracle://user:password@localhost:1521/XEPDB1"
+max_connections = 8
+min_connections = 4
+acquire_timeout_ms = 5000
+connect_timeout_ms = 5000
+idle_timeout_ms = 600000
+max_lifetime_ms = 1800000
+statement_cache_capacity = 100
+
+[redis]
+url = "redis://127.0.0.1:6379"
+pool_min_idle = 5
+pool_max_open = 50
+connection_timeout_ms = 1500
+response_timeout_ms = 1000
+
+[kafka]
+brokers = "localhost:9092"
+
+[kafka.producer]
+client_id = "wurzburg-producer"
+message_timeout_ms = 5000
+max_request_size = 1048576 # 1MB
+retries = 3
+security_protocol = "SASL_PLAINTEXT"
+sasl_mechanism = "SCRAM-SHA-512"
+sasl_username = "producer_user"
+sasl_password = "producer_password"
+
+[kafka.admin]
+request_timeout_ms = 5000
+bootstrap_servers = "localhost:9092" 
+kafka_bin_dir = "/home/mohsen/Codes/war/wurzburg/infra/kafka_2.12-3.9.2/bin/"
+partitions = 1
+replication_factor = 1
+
+[telemetry]
+enabled = true
+service_name = "wurzburg"
+service_version = "1.0.0"
+environment = "staging"
+otlp_endpoint = "http://localhost:4317"
+log_format = "json"
+log_level = "info"
+batch_max_queue = 8192
+batch_size = 1024
+batch_delay_ms = 5000
+sampling_ratio = 1

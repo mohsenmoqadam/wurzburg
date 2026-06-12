@@ -1,0 +1,129 @@
+[server]
+host = "0.0.0.0"
+port = 65001
+
+# Swagger (utoipa) configuration
+[swagger]
+enabled = true
+host = "0.0.0.0"
+port = 65002          # Separate port for Swagger
+path = "/swagger-ui" # The path where the UI is served
+
+# General database configuration
+[database]
+# Determines which database the application uses (for Trait implementation)
+# Valid values: "postgres" or "oracle"
+active_driver = "postgres"
+
+# Comprehensive PostgreSQL configuration for sqlx
+[database.postgres]
+url = "postgres://postgres:password@localhost:5432/nuremberg"
+max_connections = 100
+min_connections = 5
+# Wait time to acquire a connection from the pool
+acquire_timeout_ms = 5000
+# Wait time for establishing the initial connection
+connect_timeout_ms = 5000
+# Maximum time a connection can remain idle (10 minutes)
+idle_timeout_ms = 600000
+# Maximum total lifetime of a connection (30 minutes)
+max_lifetime_ms = 1800000
+# Number of cached statements per connection (performance improvement)
+statement_cache_capacity = 100
+
+# Oracle database configuration for future use
+[database.oracle]
+url = "oracle://user:password@localhost:1521/XEPDB1"
+max_connections = 50
+min_connections = 2
+acquire_timeout_ms = 5000
+connect_timeout_ms = 5000
+idle_timeout_ms = 600000
+max_lifetime_ms = 1800000
+statement_cache_capacity = 100
+
+[redis]
+url = "redis://127.0.0.1:6379"
+pool_min_idle = 2
+pool_max_open = 10
+connection_timeout_ms = 3000
+response_timeout_ms = 2000
+
+[kafka.producer]
+bootstrap_servers = "localhost:9093" 
+client_id = "wurzburg-producer"
+message_timeout_ms = 5000
+max_request_size = 1048576 # 1MB
+retries = 3
+security_protocol = "SASL_SSL"
+security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/ca-certificate.pem"
+sasl_mechanism = "SCRAM-SHA-512"
+sasl_username = "producer_user"
+sasl_password = "producer_password"
+
+[kafka.nuremberg.producer]
+bootstrap_servers = "localhost:9093" 
+client_id = "nuremberg-producer"
+message_timeout_ms = 5000
+max_request_size = 1048576 # 1MB
+retries = 3
+security_protocol = "SASL_SSL"
+security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/ca-certificate.pem"
+sasl_mechanism = "SCRAM-SHA-512"
+sasl_username = "nuremberg_producer_user"
+sasl_password = "nuremberg_producer_password"
+topic_name = "nuremberg.events"
+
+[kafka.admin]
+bootstrap_servers = "localhost:9092" 
+request_timeout_ms = 5000
+kafka_bin_dir = "/home/mohsen/Codes/war/wurzburg/infra/kafka_2.12-3.9.2/bin/"
+partitions = 1
+replication_factor = 1
+
+[kafka.consumer_defaults]
+bootstrap_servers = "localhost:9093"
+session_timeout_ms = 45000
+auto_offset_reset = "earliest"
+security_protocol = "SASL_SSL"
+security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/ca-certificate.pem"
+sasl_mechanism = "SCRAM-SHA-512"
+
+[tigerbeetle]
+cluster_id = 0
+replica_addresses = ["127.0.0.1:3001"]
+concurrency_max = 256
+batch_max_size = 8190
+batch_timeout_ms = 10
+channel_capacity = 65536
+ledger_id = 1
+provider_account_code = 100
+user_account_code = 200
+system_account_code = 300
+transfer_code = 1
+platform_fee_account_id = "00000000-0000-0000-0000-000000000001"
+cms_settlement_account_id = "00000000-0000-0000-0000-000000000002"
+
+[telemetry]
+enabled = true
+service_name = "wurzburg"
+service_version = "1.0.0"
+environment = "default"
+otlp_endpoint = "http://localhost:4317"
+log_format = "pretty"
+log_level = "info"
+batch_max_queue = 4096
+batch_size = 512
+batch_delay_ms = 5000
+sampling_ratio = 1.0
+
+[validation]
+[validation.provider]
+legal_name_min = 2
+legal_name_msg = "Legal name must be at least {min} characters long."
+trade_name_min = 2
+trade_name_msg = "Trade name must be at least {min} characters long."
+tax_id_min = 5
+tax_id_msg = "Tax ID must be at least {min} characters long."
+email_msg = "Invalid email format provided."
+email_regex = '^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'

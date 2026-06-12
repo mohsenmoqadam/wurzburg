@@ -1,0 +1,231 @@
+services:
+  # ----------------------------------------
+  # PostgreSQL
+  # ----------------------------------------
+  postgres:
+    image: postgres@sha256:d4c3314b2dd74ff23cd6cd07e4d7e737cb6ef791c22a7cbd744cfbfb4815df72
+    container_name: wurzburg_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: wurzburg_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d wurzburg_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------
+  # Redis
+  # ----------------------------------------
+  #redis:
+  #  image: redis@sha256:315270d166080f537bbdf1b489b603aaaa213cb55a544acfa51feb7481abb1c0
+  #  container_name: wurzburg_redis
+  #  command: redis-server --appendonly yes
+  #  ports:
+  #    - "6379:6379"
+  #  volumes:
+  #    - redis_data:/data
+  #  restart: unless-stopped
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly@sha256:0fa01a2b929e704c7a9300d23e7f52002ebd39e90996fb8bb63826aed92fa06f
+    container_name: wurzburg_dragonfly
+    restart: unless-stopped
+    command:
+      - "--dir=/data"
+      - "--dbfilename=dump"
+      - "--snapshot_cron=*/5 * * * *"
+      - "--maxmemory=256m"
+      - "--proactor_threads=1"
+    #ulimits:
+    #  memlock: -1  
+    ports:
+      - "6379:6379"
+    volumes:
+      - dragonfly_data:/data
+
+  # ----------------------------------------
+  # Redis
+  # ----------------------------------------
+  redis-commander:
+    image: rediscommander/redis-commander@sha256:19cd0c49f418779fa2822a0496c5e6516d0c792effc39ed20089e6268477e40a
+    container_name: wurzburg_redis-commander
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:dragonfly:6379
+    depends_on:
+      - dragonfly
+  
+  # ----------------------------------------
+  # Kafka (Confluent KRaft)
+  # ----------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka@sha256:acbbf674f2ed40e5d0a8ca51beb0f00692c866fc22b5ce06f8cadbdc54cd4436
+    container_name: wurzburg_kafka
+    user: "root"
+    ports:
+      - "9092:9092"   # Internal / Rust App (PLAINTEXT)
+      - "9093:9093"   # External / Clients (SASL_SSL)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Add EXTERNAL port
+      KAFKA_OPTS: "-Djava.security.auth.login.config=/etc/kafka/secrets/kafka_server_jaas.conf"
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9094,PLAINTEXT_HOST://0.0.0.0:9092,EXTERNAL://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092,EXTERNAL://kafka.arshamnovin.ir:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Protocol maps
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,EXTERNAL:SASL_SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      
+      # --- SSL Config ---
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka.server.keystore.jks
+      KAFKA_SSL_KEYSTORE_PASSWORD: password
+      KAFKA_SSL_KEY_PASSWORD: password
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/kafka.server.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_PASSWORD: password
+      
+      # --- SASL/SCRAM Config ---
+      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      
+      # --- ACL Config in KRaft ---
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      # Full access for internal communication (Rust App on 9092)
+      KAFKA_SUPER_USERS: User:ANONYMOUS
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+      - ../secrets:/etc/kafka/secrets
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui@sha256:8f2ff02d64b0a7a2b71b6b3b3148b85f66d00ec20ad40c30bdcd415d46d31818
+    container_name: wurzburg_kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:29092
+    depends_on:
+      - kafka
+
+  # ----------------------------------------
+  # MinIO (Object Storage)
+  # ----------------------------------------
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    container_name: wurzburg_minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Web UI / Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  # ----------------------------------------
+  # TigerBeetle (Setup / Format)
+  # ----------------------------------------
+  # at host not container: sudo sysctl -w kernel.io_uring_disabled=0
+  # docker compose run --rm tigerbeetle-init
+  tigerbeetle-init:
+    image: ghcr.io/tigerbeetle/tigerbeetle@sha256:fa05759708e281ad03a66f31b3a882cacaee3478f9f06361484033e75d36b02c
+    container_name: wurzburg_tigerbeetle_init
+    profiles:
+      - setup
+    security_opt:              
+      - seccomp:unconfined    
+    volumes:
+      - tigerbeetle_data:/data
+    command: format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+
+  # ----------------------------------------
+  # TigerBeetle (Main Node)
+  # ----------------------------------------
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle@sha256:fa05759708e281ad03a66f31b3a882cacaee3478f9f06361484033e75d36b02c
+    container_name: wurzburg_tigerbeetle
+    ports:
+      - "3001:3001"
+    security_opt:              
+      - seccomp:unconfined    
+    volumes:
+      - tigerbeetle_data:/data
+    command: start --addresses=0.0.0.0:3001 /data/0_0.tigerbeetle
+    restart: unless-stopped
+
+  # ----------------------------------------
+  # Telemetry: Tempo
+  # ----------------------------------------
+  tempo:
+    image: grafana/tempo@sha256:f0200a9bff6d14eb3a4332194f7b77c37ee1a3535e7e41db024d95aab6f1b4e8
+    container_name: wurzburg_tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"
+    restart: unless-stopped
+
+  # ----------------------------------------
+  # Telemetry: OpenTelemetry Collector
+  # ----------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib@sha256:0dffde3e58fc3f255cad861deb62d7c51505ce961a8a7e2107c7fc2668b774a3
+    container_name: wurzburg_otel_collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otel/config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  # ----------------------------------------
+  # Telemetry: Grafana
+  # ----------------------------------------
+  grafana:
+    image: grafana/grafana@sha256:0dc5a246ab16bb2c38a349fb588174e832b4c6c2db0981d0c3e6cd774ba66a54
+    container_name: wurzburg_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  #redis_data:
+  dragonfly_data:
+  kafka_data:
+  minio_data:
+  tempo_data:
+  grafana_data:
+  tigerbeetle_data:
