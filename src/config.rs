@@ -33,14 +33,9 @@ pub struct SwaggerConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
-    pub active_driver: String,
-    pub postgres: DbDriverConfig,
-    pub oracle: DbDriverConfig,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct DbDriverConfig {
-    pub url: String,
+    pub username: String,
+    pub password: String,
+    pub connect_string: String,
     pub max_connections: u32,
     pub min_connections: u32,
     pub acquire_timeout_ms: u64,
@@ -86,7 +81,7 @@ pub struct KafkaConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaProducerConfig {
-    pub bootstrap_servers: String, 
+    pub bootstrap_servers: String,
     pub client_id: String,
     pub message_timeout_ms: u64,
     pub max_request_size: u64,
@@ -100,7 +95,7 @@ pub struct KafkaProducerConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaAdminConfig {
-    pub bootstrap_servers: String, 
+    pub bootstrap_servers: String,
     pub request_timeout_ms: u64,
     pub kafka_bin_dir: String,
     pub partitions: u32,
@@ -109,7 +104,7 @@ pub struct KafkaAdminConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaConsumerDefaultsConfig {
-    pub bootstrap_servers: String, 
+    pub bootstrap_servers: String,
     pub session_timeout_ms: u64,
     pub auto_offset_reset: String,
     pub security_protocol: String,
@@ -146,13 +141,13 @@ pub struct ValidationConfig {
 pub struct ProviderValidationConfig {
     pub legal_name_min: usize,
     pub legal_name_msg: String,
-    
+
     pub trade_name_min: usize,
     pub trade_name_msg: String,
-    
+
     pub tax_id_min: usize,
     pub tax_id_msg: String,
-    
+
     pub email_msg: String,
     pub email_regex: String,
 }
@@ -165,7 +160,7 @@ pub struct TigerBeetleConfig {
     pub batch_max_size: usize,
     pub batch_timeout_ms: u64,
     pub channel_capacity: usize,
-    pub ledger_id: u32,      
+    pub ledger_id: u32,
     pub provider_account_code: u16,
     pub user_account_code: u16,
     pub system_account_code: u16,
@@ -220,7 +215,7 @@ impl Settings {
     }
 }
 
-impl DbDriverConfig {
+impl DatabaseConfig {
     pub fn acquire_timeout(&self) -> Duration {
         Duration::from_millis(self.acquire_timeout_ms)
     }
@@ -277,9 +272,13 @@ mod tests {
         assert!(settings.is_ok(), "Failed to load configuration");
 
         let settings = settings.unwrap();
-        assert_eq!(settings.server.port, 8080);
-        assert_eq!(settings.swagger.port, 8081);
-        assert_eq!(settings.database.active_driver, "postgres");
+        assert_eq!(settings.server.port, 65001);
+        assert_eq!(settings.swagger.port, 65002);
+        assert_eq!(settings.database.username, "wurzburg_user");
+        assert_eq!(
+            settings.database.connect_string,
+            "//87.247.175.207:1521/HYPERCARD"
+        );
     }
 
     #[test]

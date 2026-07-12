@@ -1,14 +1,12 @@
 use std::sync::Arc;
-use anyhow::Context;
 use tokio::net::TcpListener;
 use tokio::task;
 
 use wurzburg::{
     api::{router::build_app_router, swagger::swagger_router},
+    bootstrap::seed_nuremberg_kafka_infrastructure,
     config::Settings,
     state::AppState,
-    bootstrap::seed_system_accounts,
-    bootstrap::seed_nuremberg_kafka_infrastructure,
     telemetry,
 };
 
@@ -25,21 +23,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_state = Arc::new(AppState::new(settings.clone()).await?);
 
     // 4. Bootstrap
-    let bootstrap_pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&settings.database.postgres.url)
-        .await
-        .context("Failed to connect to DB for bootstrapping")?;
-    seed_system_accounts(
-        &bootstrap_pool, 
-        &app_state.tb_client, 
-        settings.tigerbeetle.clone() 
-    )
-    .await
-    .expect("Failed to seed system accounts during bootstrap");
-    bootstrap_pool.close().await;
     seed_nuremberg_kafka_infrastructure(&settings).await?;
-    
+
     // 5. Build main API router
     let app = build_app_router(app_state.clone());
 
@@ -52,11 +37,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if settings.swagger.enabled {
         let swagger_addr = format!("{}:{}", settings.swagger.host, settings.swagger.port);
         let swagger_path = settings.swagger.path.clone();
-        
+
         task::spawn(async move {
-            let swagger_app = swagger_router("/swagger-ui", &settings.server.host, settings.server.port);
+            let swagger_app =
+                swagger_router("/swagger-ui", &settings.server.host, settings.server.port);
             let swagger_listener = TcpListener::bind(&swagger_addr).await.unwrap();
-            tracing::info!("Swagger UI listening on http://{}{}", swagger_addr, swagger_path);
+            tracing::info!(
+                "Swagger UI listening on http://{}{}",
+                swagger_addr,
+                swagger_path
+            );
             axum::serve(swagger_listener, swagger_app).await.unwrap();
         });
     }

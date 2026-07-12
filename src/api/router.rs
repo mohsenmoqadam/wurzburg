@@ -5,6 +5,7 @@ use axum::{routing::{get, post}, Router};
 
 use crate::{api::cors::manual_cors_middleware, state::AppState};
 use super::handlers::provider;
+use super::handlers::system;
 use crate::api::handlers::user;
 use crate::api::handlers::transaction;
 use crate::api::handlers::priority;
@@ -36,7 +37,7 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
 
     // 4. System Routes
     let system_routes = Router::new()
-        // .route("/health", get(system::health_check))
+        .route("/db-health", get(system::db_health))
         // .route("/metrics", get(system::metrics))
         ;
 

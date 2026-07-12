@@ -1,2 +1,2 @@
 docker exec -it wurzburg_postgres psql -p 5432 -d wurzburg_db -U admin
-docker exec -it wurzburg_redis redis-cli
+docker exec -it wurzburg_dragonfly redis-cli

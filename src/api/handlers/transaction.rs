@@ -147,7 +147,7 @@ pub async fn credit_user(
     })?;
 
     if tb_result.is_empty() {
-        // 6. Persist in PostgreSQL
+        // 6. Persist in durable database
         let pg_tx = state.db.execute_credit_transfer(
             idem_key_str,
             payload.amount as i64,
@@ -240,7 +240,7 @@ pub async fn debit_user(
                 user_id, provider_id
             );
 
-            // Cancel the active priority in PostgreSQL
+            // Cancel the active priority in durable database
             state.db.cancel_active_priority_config(user_id, user_id)
                 .await
                 .map_err(internal_error)?;
@@ -284,7 +284,7 @@ pub async fn debit_user(
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to execute ledger transfer".to_string())
         })?;
 
-    // 7. Persist in PostgreSQL
+    // 7. Persist in durable database
     if tb_result.is_empty() {
         let pg_tx = state.db.execute_debit_transfer(
             idem_key_str,

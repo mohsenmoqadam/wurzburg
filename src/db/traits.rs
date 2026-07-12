@@ -1,9 +1,12 @@
 // src/db/traits.rs
+use anyhow::Result;
 use async_trait::async_trait;
 use uuid::Uuid;
-use anyhow::Result;
 
-use crate::db::models::{PriorityItemData, Provider, Transaction, User, UserAccount, UserAccountProviderInfo, UserPriorityDetails, UserProviderDetails};
+use crate::db::models::{
+    PriorityItemData, Provider, Transaction, User, UserAccount, UserAccountProviderInfo,
+    UserPriorityDetails, UserProviderDetails,
+};
 
 #[async_trait]
 pub trait ProviderRepository: Send + Sync {
@@ -32,14 +35,17 @@ pub trait UserRepository: Send + Sync {
 
     async fn get_user_providers(&self, user_id: Uuid) -> Result<Vec<Provider>>;
 
-    async fn get_user_accounts_provider_info(&self, user_id: Uuid) -> Result<Vec<UserAccountProviderInfo>>;
+    async fn get_user_accounts_provider_info(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<UserAccountProviderInfo>>;
 }
 
 #[async_trait]
 pub trait TransactionRepository: Send + Sync {
     // Check for an existing transaction by idempotency key
     async fn get_transaction_by_idempotency_key(&self, key: &str) -> Result<Option<Transaction>>;
-    
+
     // Atomically insert a transaction and update cached balances
     async fn execute_credit_transfer(
         &self,
@@ -70,7 +76,7 @@ pub trait TransactionRepository: Send + Sync {
         provider_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<(Vec<crate::db::models::Transaction>, i64), sqlx::Error>;
+    ) -> Result<(Vec<crate::db::models::Transaction>, i64)>;
 
     async fn get_user_transactions(
         &self,
@@ -78,12 +84,15 @@ pub trait TransactionRepository: Send + Sync {
         user_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<(Vec<crate::db::models::Transaction>, i64), sqlx::Error>;
+    ) -> Result<(Vec<crate::db::models::Transaction>, i64)>;
 }
 
 #[async_trait]
 pub trait PriorityRepository: Send + Sync {
-    async fn get_priority_config_by_idempotency_key(&self, key: &str) -> Result<Option<UserPriorityDetails>>;
+    async fn get_priority_config_by_idempotency_key(
+        &self,
+        key: &str,
+    ) -> Result<Option<UserPriorityDetails>>;
     /// Creates a new priority configuration for a user.
     /// This is a transactional operation that will:
     /// 1. Cancel any existing 'ACTIVE' configuration for the user.
@@ -99,10 +108,17 @@ pub trait PriorityRepository: Send + Sync {
     ) -> Result<UserPriorityDetails>;
 
     /// Fetches the currently active priority configuration and its items for a given user.
-    async fn get_active_priority_config(&self, user_id: Uuid) -> Result<Option<UserPriorityDetails>>;
+    async fn get_active_priority_config(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<UserPriorityDetails>>;
 
     /// Cancels the currently active priority configuration for a user by setting its status to 'CANCELLED'.
-    async fn cancel_active_priority_config(&self, user_id: Uuid, actor_id: Uuid) -> Result<Option<UserPriorityDetails>>;
+    async fn cancel_active_priority_config(
+        &self,
+        user_id: Uuid,
+        actor_id: Uuid,
+    ) -> Result<Option<UserPriorityDetails>>;
 
     /// Hard deletes a priority configuration and its items.
     /// Used strictly for saga compensation (rollback) if Redis fails after DB insertion.
@@ -112,4 +128,7 @@ pub trait PriorityRepository: Send + Sync {
     async fn get_all_priority_configs(&self, user_id: Uuid) -> Result<Vec<UserPriorityDetails>>;
 }
 
-pub trait AppRepository: ProviderRepository + UserRepository + TransactionRepository + PriorityRepository {}
+pub trait AppRepository:
+    ProviderRepository + UserRepository + TransactionRepository + PriorityRepository
+{
+}

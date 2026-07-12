@@ -9,20 +9,9 @@ port = 65002
 path = "/swagger-ui"
 
 [database]
-active_driver = "postgres"
-
-[database.postgres]
-url = "postgres://admin:admin@localhost:5432/wurzburg_db"
-max_connections = 64
-min_connections = 32
-acquire_timeout_ms = 5000
-connect_timeout_ms = 5000
-idle_timeout_ms = 600000
-max_lifetime_ms = 1800000
-statement_cache_capacity = 100
-
-[database.oracle]
-url = "oracle://user:password@localhost:1521/XEPDB1"
+username = "wurzburg_user"
+password = "wurzburg_pass"
+connect_string = "//87.247.175.207:1521/wurzburg"
 max_connections = 64
 min_connections = 32
 acquire_timeout_ms = 5000

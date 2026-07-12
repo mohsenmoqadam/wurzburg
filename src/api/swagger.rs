@@ -1,8 +1,8 @@
+use super::handlers::{priority, provider, system, transaction, user};
+use axum::Router;
 use utoipa::OpenApi;
 use utoipa::openapi::ServerBuilder;
 use utoipa_swagger_ui::SwaggerUi;
-use axum::Router;
-use super::handlers::{provider, user, transaction, priority};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -12,7 +12,7 @@ use super::handlers::{provider, user, transaction, priority};
         provider::download_cert,
         user::create_or_link,
         user::get,
-        user::get_user_balance, 
+        user::get_user_balance,
         transaction::credit_user,
         transaction::debit_user,
         transaction::get_provider_transactions,
@@ -20,7 +20,8 @@ use super::handlers::{provider, user, transaction, priority};
         priority::create_user_priority,
         priority::get_active_user_priority,
         priority::cancel_active_user_priority,
-        priority::get_all_user_priorities 
+        priority::get_all_user_priorities,
+        system::db_health
     ),
     components(
         schemas(
@@ -31,7 +32,7 @@ use super::handlers::{provider, user, transaction, priority};
             user::CreateUserResponse,
             user::GetUserResponse,
             user::UserBalanceResponse,
-            user::ProviderBalanceItem, 
+            user::ProviderBalanceItem,
             transaction::CreditAccountRequest,
             transaction::DebitAccountRequest,
             transaction::TransactionResponse,
@@ -47,14 +48,18 @@ use super::handlers::{provider, user, transaction, priority};
             crate::db::models::UserPriorityConfig,
             crate::db::models::UserPriorityItem,
             crate::db::models::PriorityStatus,
-            crate::db::models::PriorityUsageType     
+            crate::db::models::PriorityUsageType,
+            system::DbHealthResponse,
+            system::SystemErrorResponse,
+            system::SystemErrorBody
         )
     ),
     tags(
         (name = "Providers", description = "Provider management APIs"),
         (name = "Users", description = "User management APIs"),
         (name = "Transactions", description = "Transaction management APIs"),
-        (name = "Priorities", description = "User balance consumption priority APIs") 
+        (name = "Priorities", description = "User balance consumption priority APIs"),
+        (name = "System", description = "System health and diagnostics APIs")
     )
 )]
 pub struct ApiDoc;
@@ -65,7 +70,7 @@ pub fn swagger_router(swagger_path: &str, api_host: &str, api_port: u16) -> Rout
 
     // Create the dynamic URL
     let api_url = format!("http://{}:{}", api_host, api_port);
-    
+
     // Set the server URL dynamically
     openapi.servers = Some(vec![
         ServerBuilder::new()

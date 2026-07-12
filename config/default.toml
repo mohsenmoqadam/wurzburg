@@ -9,31 +9,10 @@ host = "0.0.0.0"
 port = 65002          # Separate port for Swagger
 path = "/swagger-ui" # The path where the UI is served
 
-# General database configuration
 [database]
-# Determines which database the application uses (for Trait implementation)
-# Valid values: "postgres" or "oracle"
-active_driver = "postgres"
-
-# Comprehensive PostgreSQL configuration for sqlx
-[database.postgres]
-url = "postgres://postgres:password@localhost:5432/nuremberg"
-max_connections = 100
-min_connections = 5
-# Wait time to acquire a connection from the pool
-acquire_timeout_ms = 5000
-# Wait time for establishing the initial connection
-connect_timeout_ms = 5000
-# Maximum time a connection can remain idle (10 minutes)
-idle_timeout_ms = 600000
-# Maximum total lifetime of a connection (30 minutes)
-max_lifetime_ms = 1800000
-# Number of cached statements per connection (performance improvement)
-statement_cache_capacity = 100
-
-# Oracle database configuration for future use
-[database.oracle]
-url = "oracle://user:password@localhost:1521/XEPDB1"
+username = "wurzburg_user"
+password = "wurzburg_pass"
+connect_string = "//87.247.175.207:1521/HYPERCARD"
 max_connections = 50
 min_connections = 2
 acquire_timeout_ms = 5000

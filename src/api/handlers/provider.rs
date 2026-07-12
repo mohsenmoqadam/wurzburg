@@ -1,19 +1,24 @@
 // src/api/handlers/provider.rs
-use std::{collections::HashMap, sync::Arc};
-use axum::{extract::{State, Path}, Json, http::StatusCode, response::IntoResponse};
+use axum::body::Body;
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use axum::response::Response;
-use axum::body::Body;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
+use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc};
 use utoipa::ToSchema;
 use uuid::Uuid;
-use regex::Regex;
-use chrono::{DateTime, Utc};
 
-use crate::state::AppState;
-use crate::db::models::Provider;
 use crate::api::validation::RuntimeValidatable;
 use crate::config::Settings;
+use crate::db::models::Provider;
+use crate::state::AppState;
 use crate::tigerbeetle::models::AppAccount;
 
 // --- DTOs ---
@@ -83,19 +88,25 @@ impl RuntimeValidatable for CreateProviderRequest {
 
         // Legal Name Validation
         if self.legal_name.trim().chars().count() < rules.legal_name_min {
-            let msg = rules.legal_name_msg.replace("{min}", &rules.legal_name_min.to_string());
+            let msg = rules
+                .legal_name_msg
+                .replace("{min}", &rules.legal_name_min.to_string());
             errors.insert("legal_name", msg);
         }
 
         // Trade Name Validation
         if self.trade_name.trim().chars().count() < rules.trade_name_min {
-            let msg = rules.trade_name_msg.replace("{min}", &rules.trade_name_min.to_string());
+            let msg = rules
+                .trade_name_msg
+                .replace("{min}", &rules.trade_name_min.to_string());
             errors.insert("trade_name", msg);
         }
 
         // Tax ID Validation
         if self.tax_id.trim().chars().count() < rules.tax_id_min {
-            let msg = rules.tax_id_msg.replace("{min}", &rules.tax_id_min.to_string());
+            let msg = rules
+                .tax_id_msg
+                .replace("{min}", &rules.tax_id_min.to_string());
             errors.insert("tax_id", msg);
         }
 
@@ -105,7 +116,10 @@ impl RuntimeValidatable for CreateProviderRequest {
                 errors.insert("email_address", rules.email_msg.clone());
             }
         } else {
-            errors.insert("email_address", "Invalid regex pattern in config".to_string());
+            errors.insert(
+                "email_address",
+                "Invalid regex pattern in config".to_string(),
+            );
         }
 
         if errors.is_empty() {
@@ -119,7 +133,10 @@ impl RuntimeValidatable for CreateProviderRequest {
 // --- Error Handling (Helper) ---
 fn internal_error<E: std::fmt::Debug>(err: E) -> (StatusCode, String) {
     tracing::error!("Internal error: {:?}", err);
-    (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".to_string())
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Internal Server Error".to_string(),
+    )
 }
 
 // --- Handlers ---
@@ -149,7 +166,7 @@ pub async fn create(
             .map(|(field, msg)| format!("{}: {}", field, msg))
             .collect::<Vec<String>>()
             .join(" | ");
-            
+
         return Err((StatusCode::BAD_REQUEST, error_msg));
     }
 
@@ -171,23 +188,42 @@ pub async fn create(
         user_data_32: 0,
         reserved: 0,
         ledger: state.config.tigerbeetle.ledger_id,
-        code: state.config.tigerbeetle.provider_account_code, 
+        code: state.config.tigerbeetle.provider_account_code,
         flags: 0,
         timestamp: 0,
     };
 
-    state.tb_client.create_account(tb_account).await.map_err(|e| {
-        tracing::error!("TigerBeetle account creation failed: {:?}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Failed to provision ledger account".to_string())
-    })?;
+    state
+        .tb_client
+        .create_account(tb_account)
+        .await
+        .map_err(|e| {
+            tracing::error!("TigerBeetle account creation failed: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to provision ledger account".to_string(),
+            )
+        })?;
 
     // 3. Generate Kafka Credentials
     let topic_name = format!("provider.events.{}", provider_id.simple());
     let kafka_username = format!("provider_user_{}", provider_id.simple());
     let kafka_password = Uuid::new_v4().simple().to_string();
-    
-    let brokers: Vec<String> = state.config.kafka.consumer_defaults.bootstrap_servers.split(',').map(String::from).collect();
-    let security_protocol = state.config.kafka.consumer_defaults.security_protocol.clone();
+
+    let brokers: Vec<String> = state
+        .config
+        .kafka
+        .consumer_defaults
+        .bootstrap_servers
+        .split(',')
+        .map(String::from)
+        .collect();
+    let security_protocol = state
+        .config
+        .kafka
+        .consumer_defaults
+        .security_protocol
+        .clone();
 
     let cert_path = "/home/mohsen/Codes/war/wurzburg/secrets/kafka.arshamnovin.ir.crt";
     let security_cert_content = std::fs::read_to_string(cert_path).unwrap_or_default();
@@ -215,36 +251,39 @@ pub async fn create(
         office_phone: payload.office_phone,
         website_url: payload.website_url,
         mailing_address: payload.mailing_address,
-        alert_phone_numbers: sqlx::types::Json(alert_phones),
+        alert_phone_numbers: alert_phones,
         banner_image_id: None,
         profile_image_id: None,
         is_active: true,
         fee_rate_bps: payload.fee_rate_bps.unwrap_or(0),
         fixed_fee_amount: payload.fixed_fee_amount.unwrap_or(0),
-        kafka_config: sqlx::types::Json(kafka_config_json),
+        kafka_config: kafka_config_json,
         ledger_account_id,
         created_at: now,
         updated_at: now,
     };
 
     // 5. Delegate to Repository
-    state.db.create_provider(provider, actor_id)
+    state
+        .db
+        .create_provider(provider, actor_id)
         .await
         .map_err(internal_error)?;
-    
+
     // 6. Execute Kafka Admin Commands Synchronously in a Blocking Thread
     let kafka_admin = state.kafka_admin.clone();
     let target_topic = topic_name;
     let target_user = kafka_username;
     let target_pass = kafka_password;
-    
+
     let kafka_join_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         kafka_admin.create_provider_topic(&target_topic)?;
         kafka_admin.create_scram_user(&target_user, &target_pass)?;
         kafka_admin.grant_consumer_acls(&target_topic, &target_user)?;
         Ok(())
-    }).await;
-    
+    })
+    .await;
+
     match kafka_join_result {
         Ok(Ok(_)) => tracing::info!("Kafka setup success for provider: {}", provider_id),
         Ok(Err(e)) => tracing::error!("Kafka admin scripts failed: {:?}", e),
@@ -278,23 +317,28 @@ pub async fn get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    
-    let provider = state.db.get_provider_by_id(id)
+    let provider = state
+        .db
+        .get_provider_by_id(id)
         .await
         .map_err(internal_error)?;
 
     match provider {
         Some(p) => {
             let tb_id = p.ledger_account_id.as_u128();
-            let tb_accounts = state.tb_client.lookup_account(tb_id)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Ledger error: {}", e)))?;
+            let tb_accounts = state.tb_client.lookup_account(tb_id).await.map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Ledger error: {}", e),
+                )
+            })?;
 
-            let (credit, debit) = tb_accounts.first()
+            let (credit, debit) = tb_accounts
+                .first()
                 .map(|acc| (acc.credits_posted as i64, acc.debits_posted as i64))
                 .unwrap_or((0, 0));
 
-            let kafka_settings: ProviderKafkaSettings = serde_json::from_value(p.kafka_config.0)
+            let kafka_settings: ProviderKafkaSettings = serde_json::from_value(p.kafka_config)
                 .unwrap_or_else(|_| ProviderKafkaSettings {
                     topic: "unknown".to_string(),
                     brokers: vec![],
@@ -315,7 +359,7 @@ pub async fn get(
                 office_phone: p.office_phone,
                 website_url: p.website_url,
                 mailing_address: p.mailing_address,
-                alert_phone_numbers: p.alert_phone_numbers.0,
+                alert_phone_numbers: p.alert_phone_numbers,
                 is_active: p.is_active,
                 fee_rate_bps: p.fee_rate_bps,
                 fixed_fee_amount: p.fixed_fee_amount,
@@ -328,7 +372,7 @@ pub async fn get(
             };
 
             Ok((StatusCode::OK, Json(response)))
-        },
+        }
         None => Err((StatusCode::NOT_FOUND, "Provider not found".to_string())),
     }
 }
@@ -355,14 +399,15 @@ pub async fn download_cert(
         .and_then(|name| name.to_str())
         .unwrap_or("kafka_certificate.crt");
 
-    let cert_content = tokio::fs::read(cert_path)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to read certificate file: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Certificate file not found".to_string())
-        })?;
+    let cert_content = tokio::fs::read(cert_path).await.map_err(|e| {
+        tracing::error!("Failed to read certificate file: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Certificate file not found".to_string(),
+        )
+    })?;
 
-   let response = Response::builder()
+    let response = Response::builder()
         .header(CONTENT_TYPE, "application/x-x509-ca-cert")
         .header(
             CONTENT_DISPOSITION,
@@ -373,4 +418,3 @@ pub async fn download_cert(
 
     Ok(response)
 }
-

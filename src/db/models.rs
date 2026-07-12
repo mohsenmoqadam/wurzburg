@@ -1,12 +1,9 @@
-// src/db/models.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, types::Json};
-use uuid::Uuid;
 use utoipa::ToSchema;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, ToSchema)]
-#[sqlx(type_name = "account_status_enum", rename_all = "UPPERCASE")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum AccountStatus {
     Active,
     Inactive,
@@ -14,16 +11,14 @@ pub enum AccountStatus {
     Blocked,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, ToSchema)]
-#[sqlx(type_name = "currency_enum", rename_all = "UPPERCASE")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum Currency {
     Irr,
     Usd,
     Eur,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, ToSchema)]
-#[sqlx(type_name = "transaction_type_enum", rename_all = "UPPERCASE")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum TransactionType {
     Credit,
     Debit,
@@ -33,8 +28,7 @@ pub enum TransactionType {
     Refund,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, ToSchema)]
-#[sqlx(type_name = "transaction_status_enum", rename_all = "UPPERCASE")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub enum TransactionStatus {
     Pending,
     Success,
@@ -42,8 +36,7 @@ pub enum TransactionStatus {
     Reversed,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, sqlx::Type, Clone, Copy)]
-#[sqlx(type_name = "priority_status_enum", rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy)]
 pub enum PriorityStatus {
     ACTIVE,
     CONSUMED,
@@ -51,14 +44,13 @@ pub enum PriorityStatus {
     CANCELLED,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, sqlx::Type, Clone, Copy)]
-#[sqlx(type_name = "priority_usage_type_enum", rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy)]
 pub enum PriorityUsageType {
     SingleUse,
     MultiUse,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provider {
     pub id: Uuid,
     pub is_core: bool,
@@ -69,37 +61,37 @@ pub struct Provider {
     pub office_phone: String,
     pub website_url: Option<String>,
     pub mailing_address: String,
-    pub alert_phone_numbers: Json<Vec<String>>,
+    pub alert_phone_numbers: Vec<String>,
     pub banner_image_id: Option<String>,
     pub profile_image_id: Option<String>,
     pub is_active: bool,
     pub fee_rate_bps: i32,
     pub fixed_fee_amount: i64,
-    pub kafka_config: Json<serde_json::Value>,
+    pub kafka_config: serde_json::Value,
     pub ledger_account_id: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub id: Uuid,
     pub nid: String,
-    pub internal_metadata: Json<serde_json::Value>,
+    pub internal_metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProvider {
     pub user_id: Uuid,
     pub provider_id: Uuid,
-    pub external_metadata: Json<serde_json::Value>,
+    pub external_metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserAccount {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -130,7 +122,7 @@ pub struct UserAccountProviderInfo {
     pub ledger_account_id: Uuid,
 }
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Transaction {
     pub id: Uuid,
     pub idempotency_key: String,
@@ -150,7 +142,7 @@ pub struct Transaction {
     pub processed_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UserPriorityConfig {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -163,7 +155,7 @@ pub struct UserPriorityConfig {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UserPriorityItem {
     pub id: Uuid,
     pub config_id: Uuid,
@@ -194,5 +186,5 @@ pub struct PriorityItemData {
     pub usage_type: crate::db::models::PriorityUsageType,
     pub max_amount: i64,
     pub user_ledger_account_id: Uuid,
-    pub provider_ledger_account_id: Uuid, 
+    pub provider_ledger_account_id: Uuid,
 }
