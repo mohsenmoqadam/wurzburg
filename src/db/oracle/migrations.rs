@@ -2,12 +2,14 @@ use crate::db::{
     error::{DbError, DbResult},
     oracle::OraclePool,
 };
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 pub struct OracleMigration {
     pub version: &'static str,
     pub description: &'static str,
-    pub checksum: &'static str,
+    pub checksum: String,
+    pub legacy_checksum: Option<&'static str>,
     pub sql: &'static str,
 }
 
@@ -21,12 +23,86 @@ impl OracleMigrator {
         Self { pool }
     }
 
+    pub async fn reset_schema(&self) -> DbResult<()> {
+        self.pool
+            .with_connection(|connection| {
+                for table_name in [
+                    "card_range_policy_assignments",
+                    "card_policy_profiles",
+                    "card_range_allocation_locks",
+                    "card_range_providers",
+                    "card_ranges",
+                    "provider_ledger_accounts",
+                    "business_config_audit",
+                    "business_config",
+                    "audit_logs",
+                    "providers",
+                    "idempotency_records",
+                    "schema_migrations",
+                ] {
+                    let statement = format!("DROP TABLE {table_name} CASCADE CONSTRAINTS PURGE");
+                    match connection.execute(&statement, &[]) {
+                        Ok(_) => {}
+                        Err(error) if error.to_string().contains("ORA-00942") => {}
+                        Err(error) => {
+                            return Err(DbError::Query(format!(
+                                "failed to drop Oracle table {table_name}: {error}"
+                            )));
+                        }
+                    }
+                }
+
+                connection.commit().map_err(|error| {
+                    DbError::Query(format!("failed to commit Oracle schema reset: {error}"))
+                })?;
+
+                Ok(())
+            })
+            .await
+    }
+
     pub async fn apply(&self, migration: OracleMigration) -> DbResult<()> {
         self.pool
             .with_connection(move |connection| {
-                let already_applied = migration_exists(connection, migration.version)?;
-                if already_applied {
-                    return Ok(());
+                match migration_checksum(connection, migration.version)? {
+                    Some(applied_checksum) if applied_checksum == migration.checksum => {
+                        return Ok(());
+                    }
+                    Some(applied_checksum)
+                        if migration
+                            .legacy_checksum
+                            .is_some_and(|legacy| legacy == applied_checksum) =>
+                    {
+                        tracing::warn!(
+                            version = migration.version,
+                            "upgrading legacy Oracle migration checksum"
+                        );
+                        connection
+                            .execute(
+                                "UPDATE schema_migrations SET checksum = :1 WHERE version = :2",
+                                &[&migration.checksum, &migration.version],
+                            )
+                            .map_err(|error| {
+                                DbError::Query(format!(
+                                    "failed to upgrade Oracle migration {} checksum: {error}",
+                                    migration.version
+                                ))
+                            })?;
+                        connection.commit().map_err(|error| {
+                            DbError::Query(format!(
+                                "failed to commit Oracle migration {} checksum upgrade: {error}",
+                                migration.version
+                            ))
+                        })?;
+                        return Ok(());
+                    }
+                    Some(applied_checksum) => {
+                        return Err(DbError::Configuration(format!(
+                            "Oracle migration {} checksum mismatch: applied {}, current {}",
+                            migration.version, applied_checksum, migration.checksum
+                        )));
+                    }
+                    None => {}
                 }
 
                 for statement in split_oracle_statements(migration.sql) {
@@ -63,16 +139,46 @@ impl OracleMigrator {
     }
 }
 
-fn migration_exists(connection: &oracle::Connection, version: &str) -> DbResult<bool> {
-    match connection.query_row_as::<i64>(
-        "SELECT COUNT(*) FROM schema_migrations WHERE version = :1",
+pub fn wurzburg_migrations() -> Vec<OracleMigration> {
+    let v001_sql = include_str!("../../../migrations/oracle/V001__foundation.sql");
+    let v002_sql = include_str!("../../../migrations/oracle/V002__card_ranges_and_policies.sql");
+    let v003_sql = include_str!("../../../migrations/oracle/V003__oracle_hardening.sql");
+
+    vec![
+        OracleMigration {
+            version: "V001",
+            description: "foundation",
+            checksum: sql_checksum(v001_sql),
+            legacy_checksum: Some("V001__foundation.sql"),
+            sql: v001_sql,
+        },
+        OracleMigration {
+            version: "V002",
+            description: "card_ranges_and_policies",
+            checksum: sql_checksum(v002_sql),
+            legacy_checksum: Some("V002__card_ranges_and_policies.sql"),
+            sql: v002_sql,
+        },
+        OracleMigration {
+            version: "V003",
+            description: "oracle_hardening",
+            checksum: sql_checksum(v003_sql),
+            legacy_checksum: None,
+            sql: v003_sql,
+        },
+    ]
+}
+
+fn migration_checksum(connection: &oracle::Connection, version: &str) -> DbResult<Option<String>> {
+    match connection.query_row_as::<String>(
+        "SELECT checksum FROM schema_migrations WHERE version = :1",
         &[&version],
     ) {
-        Ok(count) => Ok(count > 0),
+        Ok(checksum) => Ok(Some(checksum)),
         Err(error) => {
             let message = error.to_string();
-            if message.contains("ORA-00942") {
-                Ok(false)
+            if message.contains("ORA-00942") || error.kind() == oracle::ErrorKind::NoDataFound {
+                Ok(None)
             } else {
                 Err(DbError::Query(format!(
                     "failed to check Oracle migration {version}: {error}"
@@ -80,6 +186,11 @@ fn migration_exists(connection: &oracle::Connection, version: &str) -> DbResult<
             }
         }
     }
+}
+
+fn sql_checksum(sql: &str) -> String {
+    let digest = Sha256::digest(sql.as_bytes());
+    format!("{digest:x}")
 }
 
 fn split_oracle_statements(sql: &str) -> Vec<String> {
@@ -99,7 +210,7 @@ fn split_oracle_statements(sql: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_oracle_statements;
+    use super::{split_oracle_statements, sql_checksum};
 
     #[test]
     fn split_oracle_statements_ignores_comments_and_blank_lines() {
@@ -115,5 +226,10 @@ mod tests {
         assert_eq!(statements.len(), 2);
         assert!(statements[0].starts_with("CREATE TABLE one"));
         assert!(statements[1].starts_with("CREATE INDEX one_idx"));
+    }
+
+    #[test]
+    fn sql_checksum_changes_with_content() {
+        assert_ne!(sql_checksum("SELECT 1"), sql_checksum("SELECT 2"));
     }
 }

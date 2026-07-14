@@ -11,7 +11,7 @@ path = "/swagger-ui"
 [database]
 username = "wurzburg_user"
 password = "wurzburg_pass"
-connect_string = "//87.247.175.207:1521/HYPERCARD"
+connect_string = "//87.247.175.207:1521/wurzburg"
 max_connections = 8
 min_connections = 4
 acquire_timeout_ms = 5000
@@ -19,6 +19,10 @@ connect_timeout_ms = 5000
 idle_timeout_ms = 600000
 max_lifetime_ms = 1800000
 statement_cache_capacity = 100
+
+[migrations]
+enabled = true
+force_recreate = false
 
 [redis]
 url = "redis://127.0.0.1:6379"

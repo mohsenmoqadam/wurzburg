@@ -1,8 +1,10 @@
-pub mod telemetry;
-pub mod config;
-pub mod state;
 pub mod api;
-pub mod db;
-pub mod kafka;
-pub mod tigerbeetle;
 pub mod bootstrap;
+pub mod config;
+pub mod db;
+pub mod domain;
+pub mod kafka;
+pub mod services;
+pub mod state;
+pub mod telemetry;
+pub mod tigerbeetle;

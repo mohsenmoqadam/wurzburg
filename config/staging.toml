@@ -20,6 +20,10 @@ idle_timeout_ms = 600000
 max_lifetime_ms = 1800000
 statement_cache_capacity = 100
 
+[migrations]
+enabled = true
+force_recreate = false
+
 [redis]
 url = "redis://127.0.0.1:6379"
 pool_min_idle = 5

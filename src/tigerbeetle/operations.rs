@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use tokio::sync::oneshot;
-use tigerbeetle_rustclient_tests_snapshot::Client as TbClient;
 use super::mapper;
 use super::models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
+use std::sync::Arc;
+use tigerbeetle_rustclient_tests_snapshot::Client as TbClient;
+use tokio::sync::oneshot;
 
 /// Executes the batch operation for creating transfers, maps models, and notifies responders.
 pub async fn process_transfers(
@@ -55,10 +55,7 @@ pub async fn process_lookup_accounts(
     responders: &mut Vec<oneshot::Sender<Result<Vec<AppAccount>, String>>>,
 ) {
     let results = match client.lookup_accounts(batch).await {
-        Ok(tb_results) => Ok(tb_results
-            .iter()
-            .map(mapper::from_tb_account)
-            .collect()),
+        Ok(tb_results) => Ok(tb_results.iter().map(mapper::from_tb_account).collect()),
         Err(e) => Err(format!("TigerBeetle lookup_accounts error: {:?}", e)),
     };
 
@@ -75,10 +72,7 @@ pub async fn process_lookup_transfers(
     responders: &mut Vec<oneshot::Sender<Result<Vec<AppTransfer>, String>>>,
 ) {
     let results = match client.lookup_transfers(batch).await {
-        Ok(tb_results) => Ok(tb_results
-            .iter()
-            .map(mapper::from_tb_transfer)
-            .collect()),
+        Ok(tb_results) => Ok(tb_results.iter().map(mapper::from_tb_transfer).collect()),
         Err(e) => Err(format!("TigerBeetle lookup_transfers error: {:?}", e)),
     };
 

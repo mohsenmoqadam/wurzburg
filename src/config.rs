@@ -10,6 +10,7 @@ pub struct Settings {
     pub server: ServerConfig,
     pub swagger: SwaggerConfig,
     pub database: DatabaseConfig,
+    pub migrations: MigrationConfig,
     pub redis: RedisConfig,
     pub telemetry: TelemetryConfig,
     pub kafka: KafkaConfig,
@@ -43,6 +44,12 @@ pub struct DatabaseConfig {
     pub idle_timeout_ms: u64,
     pub max_lifetime_ms: u64,
     pub statement_cache_capacity: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MigrationConfig {
+    pub enabled: bool,
+    pub force_recreate: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -265,9 +272,15 @@ impl KafkaConsumerDefaultsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_load_default_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("APP_ENVIRONMENT", "test") };
+
         let settings = Settings::new();
         assert!(settings.is_ok(), "Failed to load configuration");
 
@@ -277,12 +290,14 @@ mod tests {
         assert_eq!(settings.database.username, "wurzburg_user");
         assert_eq!(
             settings.database.connect_string,
-            "//87.247.175.207:1521/HYPERCARD"
+            "//87.247.175.207:1521/wurzburg"
         );
     }
 
     #[test]
     fn test_environment_helpers() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
         unsafe { env::set_var("APP_ENVIRONMENT", "production") };
         assert!(Settings::is_production());
         assert!(!Settings::is_development());

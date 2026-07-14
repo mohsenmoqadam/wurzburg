@@ -5,10 +5,10 @@ use std::process::Command;
 use crate::config::Settings;
 
 /// A synchronous Kafka administrator module.
-/// 
-/// This struct relies on executing local Kafka shell scripts 
+///
+/// This struct relies on executing local Kafka shell scripts
 /// (e.g., `kafka-topics.sh`, `kafka-configs.sh`, `kafka-acls.sh`) via `std::process::Command`.
-/// 
+///
 /// IMPORTANT: Because these operations are synchronous and block the current thread,
 /// they must be executed inside `tokio::task::spawn_blocking` when called from an
 /// asynchronous context (like an Axum handler) to prevent starving the Tokio executor.
@@ -26,7 +26,7 @@ pub struct AppKafkaAdmin {
 
 impl AppKafkaAdmin {
     /// Initializes a new instance of `AppKafkaAdmin` using the provided application settings.
-    /// 
+    ///
     /// Extracts the binary directory path, bootstrap servers, partition count, and replication
     /// factor from the configuration.
     pub fn new(config: &Settings) -> Result<Self> {
@@ -41,22 +41,26 @@ impl AppKafkaAdmin {
     }
 
     /// Creates a new Kafka topic synchronously.
-    /// 
-    /// This uses the `kafka-topics.sh` script. The configured default partitions 
+    ///
+    /// This uses the `kafka-topics.sh` script. The configured default partitions
     /// and replication factor are automatically applied.
-    /// 
-    /// This operation is idempotent: if the topic already exists, the script will output 
+    ///
+    /// This operation is idempotent: if the topic already exists, the script will output
     /// a `TopicExistsException`, which is caught and ignored, returning a success `Ok(())`.
     pub fn create_provider_topic(&self, topic_name: &str) -> Result<()> {
         let script_path = self.kafka_bin_dir.join("kafka-topics.sh");
-        
+
         let output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--create",
-                "--topic", topic_name,
-                "--partitions", &self.partitions,
-                "--replication-factor", &self.replication_factor,
+                "--topic",
+                topic_name,
+                "--partitions",
+                &self.partitions,
+                "--replication-factor",
+                &self.replication_factor,
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;
@@ -73,20 +77,22 @@ impl AppKafkaAdmin {
     }
 
     /// Deletes an existing Kafka topic synchronously.
-    /// 
+    ///
     /// This uses the `kafka-topics.sh` script with the `--delete` flag.
-    /// 
-    /// This operation is idempotent: if the topic does not exist (or was already deleted), 
-    /// the script will output an `UnknownTopicOrPartitionException`. This specific exception 
+    ///
+    /// This operation is idempotent: if the topic does not exist (or was already deleted),
+    /// the script will output an `UnknownTopicOrPartitionException`. This specific exception
     /// is ignored, and the function successfully returns `Ok(())`.
     pub fn delete_provider_topic(&self, topic_name: &str) -> Result<()> {
         let script_path = self.kafka_bin_dir.join("kafka-topics.sh");
-        
+
         let output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--delete",
-                "--topic", topic_name,
+                "--topic",
+                topic_name,
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;
@@ -103,20 +109,24 @@ impl AppKafkaAdmin {
     }
 
     /// Creates or updates a Kafka user with SCRAM-SHA-512 credentials.
-    /// 
+    ///
     /// Uses the `kafka-configs.sh` script to alter the 'users' entity type and add
     /// the SCRAM configuration string. If the user already exists, their password is updated.
     pub fn create_scram_user(&self, username: &str, password: &str) -> Result<()> {
         let config_string = format!("SCRAM-SHA-512=[password={}]", password);
         let script_path = self.kafka_bin_dir.join("kafka-configs.sh");
-        
+
         let output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--alter",
-                "--add-config", &config_string,
-                "--entity-type", "users",
-                "--entity-name", username,
+                "--add-config",
+                &config_string,
+                "--entity-type",
+                "users",
+                "--entity-name",
+                username,
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;
@@ -130,22 +140,26 @@ impl AppKafkaAdmin {
     }
 
     /// Deletes the SCRAM-SHA-512 credentials for a specific Kafka user.
-    /// 
-    /// This effectively revokes the user's ability to authenticate. Uses the 
+    ///
+    /// This effectively revokes the user's ability to authenticate. Uses the
     /// `kafka-configs.sh` script to delete the SCRAM configuration from the 'users' entity.
-    /// 
+    ///
     /// This operation is idempotent: if the user or configuration does not exist,
     /// exceptions like `InvalidConfigurationException` are ignored.
     pub fn delete_scram_user(&self, username: &str) -> Result<()> {
         let script_path = self.kafka_bin_dir.join("kafka-configs.sh");
-        
+
         let output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--alter",
-                "--delete-config", "SCRAM-SHA-512",
-                "--entity-type", "users",
-                "--entity-name", username,
+                "--delete-config",
+                "SCRAM-SHA-512",
+                "--entity-type",
+                "users",
+                "--entity-name",
+                username,
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;
@@ -153,19 +167,21 @@ impl AppKafkaAdmin {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Ensure idempotency by ignoring non-existent configuration or user errors.
-            if !stderr.contains("InvalidConfigurationException") && !stderr.contains("does not exist") {
+            if !stderr.contains("InvalidConfigurationException")
+                && !stderr.contains("does not exist")
+            {
                 return Err(anyhow::anyhow!("Failed to delete user: {}", stderr));
             }
         }
 
         Ok(())
     }
-    
+
     /// Grants necessary consumption ACLs to a designated user for a specific topic.
-    /// 
+    ///
     /// This process involves two synchronous script executions using `kafka-acls.sh`:
     /// 1. Grants 'Read' and 'Describe' operations to the user strictly on the specified topic.
-    /// 2. Grants 'Read' operations to the user across all consumer groups (wildcard '*'), 
+    /// 2. Grants 'Read' operations to the user across all consumer groups (wildcard '*'),
     ///    which is required for consumer group coordination.
     pub fn grant_consumer_acls(&self, topic_name: &str, username: &str) -> Result<()> {
         let script_path = self.kafka_bin_dir.join("kafka-acls.sh");
@@ -174,12 +190,17 @@ impl AppKafkaAdmin {
         // Step 1: Grant 'Read' and 'Describe' permissions on the specific Topic.
         let topic_output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--add",
-                "--allow-principal", &principal,
-                "--operation", "Read",
-                "--operation", "Describe",
-                "--topic", topic_name,
+                "--allow-principal",
+                &principal,
+                "--operation",
+                "Read",
+                "--operation",
+                "Describe",
+                "--topic",
+                topic_name,
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;
@@ -193,11 +214,15 @@ impl AppKafkaAdmin {
         // This is mandatory for consumers to join groups and commit offsets.
         let group_output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--add",
-                "--allow-principal", &principal,
-                "--operation", "Read",
-                "--group", "*",
+                "--allow-principal",
+                &principal,
+                "--operation",
+                "Read",
+                "--group",
+                "*",
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;
@@ -216,11 +241,15 @@ impl AppKafkaAdmin {
 
         let output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--create",
-                "--topic", topic_name,
-                "--partitions", &self.partitions,
-                "--replication-factor", &self.replication_factor,
+                "--topic",
+                topic_name,
+                "--partitions",
+                &self.partitions,
+                "--replication-factor",
+                &self.replication_factor,
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;
@@ -242,12 +271,17 @@ impl AppKafkaAdmin {
 
         let output = Command::new(&script_path)
             .args([
-                "--bootstrap-server", &self.bootstrap_servers,
+                "--bootstrap-server",
+                &self.bootstrap_servers,
                 "--add",
-                "--allow-principal", &principal,
-                "--operation", "Write",
-                "--operation", "Describe",
-                "--topic", topic_name,
+                "--allow-principal",
+                &principal,
+                "--operation",
+                "Write",
+                "--operation",
+                "Describe",
+                "--topic",
+                topic_name,
             ])
             .output()
             .with_context(|| format!("Failed to execute {:?}", script_path))?;

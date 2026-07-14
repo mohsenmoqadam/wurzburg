@@ -3,9 +3,7 @@ use tigerbeetle_rustclient_tests_snapshot::{
     Transfer as TbTransfer, TransferFlags,
 };
 
-use super::models::{
-    AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer,
-};
+use super::models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
 
 pub fn to_tb_account(app: &AppAccount) -> TbAccount {
     TbAccount {

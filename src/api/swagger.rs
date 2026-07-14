@@ -1,4 +1,4 @@
-use super::handlers::{priority, provider, system, transaction, user};
+use super::handlers::{card_policy, card_range, system};
 use axum::Router;
 use utoipa::OpenApi;
 use utoipa::openapi::ServerBuilder;
@@ -7,58 +7,46 @@ use utoipa_swagger_ui::SwaggerUi;
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        provider::create,
-        provider::get,
-        provider::download_cert,
-        user::create_or_link,
-        user::get,
-        user::get_user_balance,
-        transaction::credit_user,
-        transaction::debit_user,
-        transaction::get_provider_transactions,
-        transaction::get_user_transactions,
-        priority::create_user_priority,
-        priority::get_active_user_priority,
-        priority::cancel_active_user_priority,
-        priority::get_all_user_priorities,
-        system::db_health
+        system::db_health,
+        card_range::create,
+        card_range::get,
+        card_range::list,
+        card_range::update,
+        card_range::activate,
+        card_range::suspend,
+        card_range::attach_provider,
+        card_range::suspend_provider,
+        card_range::list_providers,
+        card_range::list_provider_ranges,
+        card_policy::create_range_policy,
+        card_policy::get_range_policy
     ),
     components(
         schemas(
-            provider::CreateProviderRequest,
-            provider::CreateProviderResponse,
-            provider::GetProviderResponse,
-            user::CreateUserRequest,
-            user::CreateUserResponse,
-            user::GetUserResponse,
-            user::UserBalanceResponse,
-            user::ProviderBalanceItem,
-            transaction::CreditAccountRequest,
-            transaction::DebitAccountRequest,
-            transaction::TransactionResponse,
-            transaction::TransactionItem,
-            transaction::PaginatedTransactionsResponse,
-            crate::db::models::TransactionType,
-            crate::db::models::TransactionStatus,
-            priority::CreatePriorityRequest,
-            priority::PriorityItemRequest,
-            priority::PriorityConfigResponse,
-            priority::PriorityConfigListResponse,
-            crate::db::models::UserPriorityDetails,
-            crate::db::models::UserPriorityConfig,
-            crate::db::models::UserPriorityItem,
-            crate::db::models::PriorityStatus,
-            crate::db::models::PriorityUsageType,
             system::DbHealthResponse,
             system::SystemErrorResponse,
-            system::SystemErrorBody
+            system::SystemErrorBody,
+            crate::api::error::ApiErrorResponse,
+            crate::api::error::ApiErrorBody,
+            crate::api::dto::card_range::CreateCardRangeRequest,
+            crate::api::dto::card_range::UpdateCardRangeRequest,
+            crate::api::dto::card_range::AttachCardRangeProviderRequest,
+            crate::api::dto::card_range::CardRangeResponse,
+            crate::api::dto::card_range::CardRangeListResponse,
+            crate::api::dto::card_range::CardRangeProviderResponse,
+            crate::api::dto::card_range::CardRangeProviderListResponse,
+            crate::api::dto::card_range::FundingModeDto,
+            crate::api::dto::card_range::CardRangeStatusDto,
+            crate::api::dto::card_range::CardRangeProviderStatusDto,
+            crate::api::dto::card_policy::CreateCardRangePolicyRequest,
+            crate::api::dto::card_policy::CardRangePolicyResponse,
+            crate::api::dto::card_policy::CardPolicyProfileStatusDto,
+            crate::api::dto::card_policy::CardRangePolicyAssignmentStatusDto
         )
     ),
     tags(
-        (name = "Providers", description = "Provider management APIs"),
-        (name = "Users", description = "User management APIs"),
-        (name = "Transactions", description = "Transaction management APIs"),
-        (name = "Priorities", description = "User balance consumption priority APIs"),
+        (name = "Card Ranges", description = "Card range and provider eligibility APIs"),
+        (name = "Card Policies", description = "Range-scoped card policy APIs"),
         (name = "System", description = "System health and diagnostics APIs")
     )
 )]

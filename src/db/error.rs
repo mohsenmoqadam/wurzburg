@@ -4,6 +4,7 @@ use std::{error::Error, fmt};
 pub enum DbError {
     Configuration(String),
     Connection(String),
+    Conflict(String),
     Query(String),
     BlockingTask(String),
 }
@@ -15,6 +16,7 @@ impl fmt::Display for DbError {
                 write!(formatter, "database configuration error: {message}")
             }
             Self::Connection(message) => write!(formatter, "database connection error: {message}"),
+            Self::Conflict(message) => write!(formatter, "database conflict: {message}"),
             Self::Query(message) => write!(formatter, "database query error: {message}"),
             Self::BlockingTask(message) => {
                 write!(formatter, "database blocking task error: {message}")

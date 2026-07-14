@@ -8,6 +8,8 @@ use crate::{
     db::error::{DbError, DbResult},
 };
 
+use super::transaction::{commit, rollback};
+
 #[derive(Debug, Clone)]
 pub struct OracleConnectConfig {
     pub username: String,
@@ -79,6 +81,41 @@ impl OraclePool {
         })
         .await
         .map_err(|error| DbError::BlockingTask(format!("Oracle connection task failed: {error}")))?
+    }
+
+    pub async fn with_transaction<F, T>(&self, context: &'static str, operation: F) -> DbResult<T>
+    where
+        F: FnOnce(&oracle::Connection) -> DbResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let pool = self.inner.clone();
+        task::spawn_blocking(move || {
+            let connection = pool.get().map_err(|error| {
+                DbError::Connection(format!("failed to acquire Oracle connection: {error}"))
+            })?;
+
+            match operation(&connection) {
+                Ok(value) => {
+                    commit(&connection, context)?;
+                    Ok(value)
+                }
+                Err(error) => {
+                    if let Err(rollback_error) = rollback(&connection, context) {
+                        tracing::error!(
+                            operation = context,
+                            rollback_error = %rollback_error,
+                            original_error = %error,
+                            "failed to rollback Oracle transaction"
+                        );
+                    }
+                    Err(error)
+                }
+            }
+        })
+        .await
+        .map_err(|error| {
+            DbError::BlockingTask(format!("Oracle transaction task failed: {error}"))
+        })?
     }
 }
 

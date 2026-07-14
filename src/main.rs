@@ -4,8 +4,8 @@ use tokio::task;
 
 use wurzburg::{
     api::{router::build_app_router, swagger::swagger_router},
-    bootstrap::seed_nuremberg_kafka_infrastructure,
     config::Settings,
+    db::oracle::{OracleConnectConfig, OracleMigrator, OraclePool, wurzburg_migrations},
     state::AppState,
     telemetry,
 };
@@ -19,11 +19,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     telemetry::tracing::init(&settings.telemetry)?;
     tracing::info!("Starting server in {} environment", Settings::environment());
 
-    // 3. Init state (DB, Redis)
-    let app_state = Arc::new(AppState::new(settings.clone()).await?);
+    // 3. Ensure Oracle schema is ready before accepting traffic.
+    if settings.migrations.enabled {
+        let oracle_config = OracleConnectConfig::from_driver_config(&settings.database)?;
+        let oracle_pool = OraclePool::connect(oracle_config).await?;
+        let migrator = OracleMigrator::new(oracle_pool);
 
-    // 4. Bootstrap
-    seed_nuremberg_kafka_infrastructure(&settings).await?;
+        if settings.migrations.force_recreate {
+            tracing::warn!("Force recreating Wurzburg Oracle schema before migration");
+            migrator.reset_schema().await?;
+        }
+
+        for migration in wurzburg_migrations() {
+            tracing::info!("Applying Oracle migration {}", migration.version);
+            migrator.apply(migration).await?;
+        }
+    }
+
+    // 4. Init state (DB, Redis)
+    let app_state = Arc::new(AppState::new(settings.clone()).await?);
 
     // 5. Build main API router
     let app = build_app_router(app_state.clone());
@@ -40,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         task::spawn(async move {
             let swagger_app =
-                swagger_router("/swagger-ui", &settings.server.host, settings.server.port);
+                swagger_router(&swagger_path, &settings.server.host, settings.server.port);
             let swagger_listener = TcpListener::bind(&swagger_addr).await.unwrap();
             tracing::info!(
                 "Swagger UI listening on http://{}{}",
