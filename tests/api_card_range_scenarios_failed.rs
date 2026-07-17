@@ -8,13 +8,13 @@ use wurzburg::{
         auth::extract_trusted_actor,
         handlers::card_ranges::{
             CardRangeCmsOperationModeDto, CardRangeFundingModeDto,
-            CardRangeWithdrawalLimitAuthorityDto, CreateCardRangeRequest,
+            CardRangeWithdrawalLimitAuthorityDto, CreateCardRangeRequest, ListCardRangesQuery,
         },
         request_context::{BackendToken, TrustedRequestContext},
         result_codes::WurzburgResultCode,
     },
     config::BackendTokenTransport,
-    domain::card_range::NewCardRange,
+    domain::card_range::{CardRangeListQuery, NewCardRange},
 };
 
 fn trusted_context(assertion: String) -> TrustedRequestContext {
@@ -85,4 +85,37 @@ fn rejects_unknown_card_range_api_enum_value() {
         WurzburgResultCode::InvalidCardRangeBoundary.parts().1,
         "INVALID_CARD_RANGE_BOUNDARY"
     );
+}
+
+#[test]
+fn rejects_invalid_withdrawal_authority_filter_with_specific_result_code() {
+    let error = CardRangeListQuery::try_from(ListCardRangesQuery {
+        status: None,
+        funding_mode: None,
+        withdrawal_limit_authority: Some("UNSUPPORTED".to_string()),
+        cursor: None,
+        limit: Some(50),
+    })
+    .expect_err("invalid authority filter should fail");
+
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.body().error.code,
+        "INVALID_WITHDRAWAL_LIMIT_AUTHORITY"
+    );
+}
+
+#[test]
+fn rejects_out_of_range_card_range_page_limit() {
+    let error = CardRangeListQuery::try_from(ListCardRangesQuery {
+        status: None,
+        funding_mode: None,
+        withdrawal_limit_authority: None,
+        cursor: None,
+        limit: Some(101),
+    })
+    .expect_err("page limit above the production bound should fail");
+
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error.body().error.code, "INVALID_CARD_RANGE_FILTER");
 }

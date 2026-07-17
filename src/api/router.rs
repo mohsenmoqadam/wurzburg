@@ -13,7 +13,14 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
     let system_routes = Router::new().route("/db-health", get(system::db_health));
 
     let api_router = Router::new()
-        .route("/card-ranges", post(card_ranges::create_card_range))
+        .route(
+            "/card-ranges",
+            post(card_ranges::create_card_range).get(card_ranges::list_card_ranges),
+        )
+        .route(
+            "/card-ranges/{card_range_id}",
+            get(card_ranges::get_card_range),
+        )
         .nest("/system", system_routes);
 
     let app = Router::new()

@@ -1,36 +1,17 @@
-use std::{
-    sync::OnceLock,
-    time::Duration,
-};
+use std::{sync::OnceLock, time::Duration};
 
 use anyhow::Result;
 
-use opentelemetry::{
-    trace::TracerProvider,
-    KeyValue,
-};
+use opentelemetry::{KeyValue, trace::TracerProvider};
 
-use opentelemetry_otlp::{
-    SpanExporter,
-    WithExportConfig,
-};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 
 use opentelemetry_sdk::{
     resource::Resource,
-    trace::{
-        BatchConfigBuilder,
-        BatchSpanProcessor,
-        Sampler,
-        SdkTracerProvider,
-    },
+    trace::{BatchConfigBuilder, BatchSpanProcessor, Sampler, SdkTracerProvider},
 };
 
-use tracing_subscriber::{
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-    Layer,
-};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::TelemetryConfig;
 
@@ -41,8 +22,7 @@ static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 /// Initialize logging and OpenTelemetry tracing.
 pub fn init(config: &TelemetryConfig) -> Result<()> {
     // Log level filter (fallback: info)
-    let filter = EnvFilter::try_new(&config.log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Logging only when telemetry is disabled
     if !config.enabled {
@@ -78,43 +58,33 @@ pub fn init(config: &TelemetryConfig) -> Result<()> {
         .build();
 
     // Batch span processor
-    let batch_processor =
-        BatchSpanProcessor::builder(exporter)
-            .with_batch_config(batch_config)
-            .build();
+    let batch_processor = BatchSpanProcessor::builder(exporter)
+        .with_batch_config(batch_config)
+        .build();
 
     // Tracer provider with sampling
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource)
-        .with_sampler(Sampler::ParentBased(Box::new(
-            Sampler::TraceIdRatioBased(config.sampling_ratio),
-        )))
+        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+            config.sampling_ratio,
+        ))))
         .with_span_processor(batch_processor)
         .build();
 
     // Store provider for shutdown
-    TRACER_PROVIDER
-        .set(tracer_provider.clone())
-        .ok();
+    TRACER_PROVIDER.set(tracer_provider.clone()).ok();
 
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 
     // Tracer used by tracing-opentelemetry
-    let tracer =
-        tracer_provider.tracer(config.service_name.clone());
+    let tracer = tracer_provider.tracer(config.service_name.clone());
 
-    let telemetry_layer =
-        tracing_opentelemetry::layer()
-            .with_tracer(tracer);
+    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     // Log formatting
     let fmt_layer = match config.log_format.as_str() {
-        "json" => tracing_subscriber::fmt::layer()
-            .json()
-            .boxed(),
-        _ => tracing_subscriber::fmt::layer()
-            .pretty()
-            .boxed(),
+        "json" => tracing_subscriber::fmt::layer().json().boxed(),
+        _ => tracing_subscriber::fmt::layer().pretty().boxed(),
     };
 
     // Build tracing subscriber

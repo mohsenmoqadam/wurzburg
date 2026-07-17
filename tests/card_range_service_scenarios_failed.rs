@@ -20,8 +20,8 @@ use wurzburg::{
     domain::{
         audit::NewAuditLog,
         card_range::{
-            CardNumberRange, CardRange, CmsOperationMode, FundingMode, NewCardRange,
-            WithdrawalLimitAuthority,
+            CardNumberRange, CardRange, CardRangeListPage, CardRangeListQuery, CmsOperationMode,
+            FundingMode, NewCardRange, WithdrawalLimitAuthority,
         },
         idempotency::{IdempotencyRecord, NewIdempotencyRecord},
     },
@@ -45,6 +45,13 @@ impl CardRangeRepository for FailureRepository {
 
     async fn get_card_range(&self, _card_range_id: Uuid) -> DbResult<Option<CardRange>> {
         Ok(None)
+    }
+
+    async fn list_card_ranges(&self, _query: CardRangeListQuery) -> DbResult<CardRangeListPage> {
+        Ok(CardRangeListPage {
+            items: vec![],
+            next_cursor: None,
+        })
     }
 
     async fn card_range_overlaps(&self, _numbers: CardNumberRange) -> DbResult<bool> {
@@ -189,4 +196,30 @@ async fn rejects_overlapping_card_range() {
         .expect_err("overlap should fail");
 
     assert_eq!(error.body().error.code, "CARD_RANGE_OVERLAP");
+}
+
+#[tokio::test]
+async fn rejects_read_without_platform_read_scope() {
+    let service = CardRangeService::new(FailureRepository::default());
+    let context = command_context(vec!["platform.card_ranges:write"]);
+
+    let error = service
+        .get_card_range(&context.actor, Uuid::new_v4())
+        .await
+        .expect_err("missing read scope should fail");
+
+    assert_eq!(error.body().error.code, "MISSING_REQUIRED_SCOPE");
+}
+
+#[tokio::test]
+async fn returns_not_found_for_missing_card_range() {
+    let service = CardRangeService::new(FailureRepository::default());
+    let context = command_context(vec!["platform.card_ranges:read"]);
+
+    let error = service
+        .get_card_range(&context.actor, Uuid::new_v4())
+        .await
+        .expect_err("missing card range should fail");
+
+    assert_eq!(error.body().error.code, "CARD_RANGE_NOT_FOUND");
 }

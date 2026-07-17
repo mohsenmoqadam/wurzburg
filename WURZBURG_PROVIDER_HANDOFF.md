@@ -106,7 +106,7 @@ A Provider can:
 System admins can:
 
 - create and configure providers
-- attach/detach providers to card ranges
+- configure provider card-range eligibility during provider lifecycle workflows
 - inspect all provider/user/card/transaction data
 - override or suspend provider capabilities
 - query complete multi-provider card transaction history
@@ -248,18 +248,24 @@ Rules:
   behind the selected card range.
 - Only lifecycle `ACTIVE` providers may hold an ACTIVE range attachment;
   `READY` is not operational eligibility.
-- Card-range attachment is admin-only.
+- Card-range eligibility is selected during provider creation and provider
+  lifecycle workflows; Wurzburg does not expose a standalone CARD API that
+  detaches a provider from a range.
 - The relationship row stores current lifecycle state. Every attach, suspend,
-  reactivate, move, or detach transition writes an immutable audit snapshot.
-- Detach/suspend/move is an unconditional platform emergency command. Active
-  cards, links, and non-zero balances never block it, and financial history or
-  TigerBeetle accounts are never deleted.
+  reactivate, move, provider deletion, or operational-control transition writes
+  an immutable audit snapshot.
+- A provider may be deleted only before any financial activity or transaction
+  history exists. Deletion is a provider soft delete and removes active
+  card-range eligibility without physically deleting relationship history. Once
+  a provider has transaction history, it cannot be deleted; lifecycle or
+  operational suspension can stop new use while preserving financial history and
+  TigerBeetle accounts.
 - Suspending eligibility blocks new onboarding, card assignment, credit grant,
   and use of that provider in new Balance/Confirm decisions. Full credit return
   remains allowed so the provider can reclaim existing user credit.
 - Affected card funding sources are suspended and CP refresh is requested. If
-  the final provider is removed, the range is suspended as defined by the card-
-  range handoff.
+  the final active provider eligibility is removed, the range is suspended as
+  defined by the card-range handoff.
 
 ## 6. Global User Registry And Provider Links
 

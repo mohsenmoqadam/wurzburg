@@ -62,7 +62,8 @@ async fn creates_card_range_through_running_wurzburg_http_instance() {
     })
     .to_string();
 
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::new();
+    let response = client
         .post(format!("http://{address}/api/v1/card-ranges"))
         .bearer_auth(support::signed_platform_admin_jwt())
         .header("Idempotency-Key", Uuid::new_v4().to_string())
@@ -93,6 +94,59 @@ async fn creates_card_range_through_running_wurzburg_http_instance() {
     );
     assert_eq!(result_symbol.as_deref(), Some("SUCCESS"));
     assert!(response_body.contains("\"start_card_number\""));
+    let created: serde_json::Value =
+        serde_json::from_str(&response_body).expect("create response should be JSON");
+    let card_range_id = created["card_range_id"]
+        .as_str()
+        .expect("created card range ID should be present");
+
+    let get_response = client
+        .get(format!(
+            "http://{address}/api/v1/card-ranges/{card_range_id}"
+        ))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("X-Correlation-Id", "card-range-http-integration-get")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.10")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .expect("HTTP get request should complete");
+    let get_status = get_response.status();
+    let get_body = get_response
+        .text()
+        .await
+        .expect("HTTP get response body should read");
+
+    assert!(
+        get_status == reqwest::StatusCode::OK,
+        "unexpected get HTTP response: status={get_status}, body={get_body}"
+    );
+    assert!(get_body.contains(card_range_id));
+
+    let list_response = client
+        .get(format!(
+            "http://{address}/api/v1/card-ranges?status=DRAFT&funding_mode=SINGLE_PROVIDER&withdrawal_limit_authority=PLATFORM&limit=10"
+        ))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("X-Correlation-Id", "card-range-http-integration-list")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.10")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .expect("HTTP list request should complete");
+    let list_status = list_response.status();
+    let list_body = list_response
+        .text()
+        .await
+        .expect("HTTP list response body should read");
+
+    assert!(
+        list_status == reqwest::StatusCode::OK,
+        "unexpected list HTTP response: status={list_status}, body={list_body}"
+    );
+    assert!(list_body.contains(card_range_id));
 }
 
 fn unique_card_range() -> (String, String) {

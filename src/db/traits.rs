@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::{
     audit::NewAuditLog,
-    card_range::{CardNumberRange, CardRange, NewCardRange},
+    card_range::{CardNumberRange, CardRange, CardRangeListPage, CardRangeListQuery, NewCardRange},
     idempotency::{IdempotencyRecord, NewIdempotencyRecord},
 };
 
@@ -49,6 +49,11 @@ pub trait CardRangeRepository: Send + Sync {
         &self,
         card_range_id: Uuid,
     ) -> crate::db::error::DbResult<Option<CardRange>>;
+
+    async fn list_card_ranges(
+        &self,
+        query: CardRangeListQuery,
+    ) -> crate::db::error::DbResult<CardRangeListPage>;
 
     async fn card_range_overlaps(
         &self,
@@ -128,6 +133,13 @@ where
         card_range_id: Uuid,
     ) -> crate::db::error::DbResult<Option<CardRange>> {
         (**self).get_card_range(card_range_id).await
+    }
+
+    async fn list_card_ranges(
+        &self,
+        query: CardRangeListQuery,
+    ) -> crate::db::error::DbResult<CardRangeListPage> {
+        (**self).list_card_ranges(query).await
     }
 
     async fn card_range_overlaps(

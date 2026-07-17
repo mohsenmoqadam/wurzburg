@@ -4,6 +4,9 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
+pub const DEFAULT_CARD_RANGE_PAGE_LIMIT: u16 = 50;
+pub const MAX_CARD_RANGE_PAGE_LIMIT: u16 = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FundingMode {
@@ -207,6 +210,54 @@ impl CardRange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardRangeListCursor {
+    pub created_at: DateTime<Utc>,
+    pub card_range_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardRangeListQuery {
+    pub status: Option<CardRangeStatus>,
+    pub funding_mode: Option<FundingMode>,
+    pub withdrawal_limit_authority: Option<WithdrawalLimitAuthority>,
+    pub cursor: Option<CardRangeListCursor>,
+    pub limit: u16,
+}
+
+impl CardRangeListQuery {
+    pub fn new(
+        status: Option<CardRangeStatus>,
+        funding_mode: Option<FundingMode>,
+        withdrawal_limit_authority: Option<WithdrawalLimitAuthority>,
+        cursor: Option<CardRangeListCursor>,
+        limit: Option<u16>,
+    ) -> CardRangeResult<Self> {
+        let limit = limit.unwrap_or(DEFAULT_CARD_RANGE_PAGE_LIMIT);
+        if limit == 0 || limit > MAX_CARD_RANGE_PAGE_LIMIT {
+            return Err(CardRangeError::InvalidPageLimit);
+        }
+
+        Ok(Self {
+            status,
+            funding_mode,
+            withdrawal_limit_authority,
+            cursor,
+            limit,
+        })
+    }
+
+    pub fn database_fetch_limit(&self) -> u16 {
+        self.limit + 1
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardRangeListPage {
+    pub items: Vec<CardRange>,
+    pub next_cursor: Option<CardRangeListCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardRangeProviderEligibility {
     pub card_range_id: Uuid,
     pub provider_id: Uuid,
@@ -233,6 +284,7 @@ pub enum CardRangeError {
     InvalidCardNumber,
     InvalidBoundaryOrder,
     InvalidLimitCalendar(String),
+    InvalidPageLimit,
     PlatformAuthorityRequiresCalendar,
     CmsAuthorityRequiresNoCalendar,
 }
@@ -251,6 +303,10 @@ impl fmt::Display for CardRangeError {
             Self::InvalidLimitCalendar(message) => {
                 write!(formatter, "invalid limit calendar: {message}")
             }
+            Self::InvalidPageLimit => write!(
+                formatter,
+                "card range page limit must be between 1 and {MAX_CARD_RANGE_PAGE_LIMIT}"
+            ),
             Self::PlatformAuthorityRequiresCalendar => write!(
                 formatter,
                 "PLATFORM withdrawal authority requires a limit calendar"

@@ -13,8 +13,9 @@ use crate::{
         traits::CardRangeRepository,
     },
     domain::card_range::{
-        CardNumberRange, CardRange, CardRangeStatus, CmsOperationMode, FundingMode, LimitCalendar,
-        LimitWindowMode, NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
+        CardNumberRange, CardRange, CardRangeListCursor, CardRangeListPage, CardRangeListQuery,
+        CardRangeStatus, CmsOperationMode, FundingMode, LimitCalendar, LimitWindowMode,
+        NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
     },
 };
 
@@ -77,6 +78,67 @@ impl CardRangeRepository for OracleRepository {
                     Err(error) => Err(error),
                 },
             )
+            .await
+    }
+
+    async fn list_card_ranges(&self, query: CardRangeListQuery) -> DbResult<CardRangeListPage> {
+        self.pool
+            .with_connection(move |connection| {
+                let status = query.status.map(|value| value.as_db_value().to_string());
+                let funding_mode = query
+                    .funding_mode
+                    .map(|value| value.as_db_value().to_string());
+                let authority = query
+                    .withdrawal_limit_authority
+                    .map(|value| value.as_db_value().to_string());
+                let cursor_created_at = query
+                    .cursor
+                    .as_ref()
+                    .map(|cursor| format_oracle_utc(cursor.created_at));
+                let cursor_id = query
+                    .cursor
+                    .as_ref()
+                    .map(|cursor| uuid_to_raw16(cursor.card_range_id).to_vec());
+                let fetch_limit = i64::from(query.database_fetch_limit());
+                let page_limit = usize::from(query.limit);
+                let bind_params: &[(&str, &dyn oracle::sql_type::ToSql)] = &[
+                    ("status", &status),
+                    ("funding_mode", &funding_mode),
+                    ("authority", &authority),
+                    ("cursor_created_at", &cursor_created_at),
+                    ("cursor_id", &cursor_id),
+                    ("fetch_limit", &fetch_limit),
+                ];
+
+                let rows = connection
+                    .query_named(card_range_list_sql(), bind_params)
+                    .map_err(|error| {
+                        DbError::Query(format!("failed to list card ranges: {error}"))
+                    })?;
+
+                let mut items = Vec::new();
+                for row in rows {
+                    let row = row.map_err(|error| {
+                        DbError::Query(format!("failed to read listed card range row: {error}"))
+                    })?;
+                    items.push(map_card_range_row(&row)?);
+                }
+
+                let has_next_page = items.len() > page_limit;
+                if has_next_page {
+                    items.truncate(page_limit);
+                }
+                let next_cursor = if has_next_page {
+                    items.last().map(|card_range| CardRangeListCursor {
+                        created_at: card_range.created_at,
+                        card_range_id: card_range.card_range_id,
+                    })
+                } else {
+                    None
+                };
+
+                Ok(CardRangeListPage { items, next_cursor })
+            })
             .await
     }
 
@@ -145,6 +207,41 @@ pub(crate) fn card_range_select_sql() -> &'static str {
         TO_CHAR(SYS_EXTRACT_UTC(updated_at), 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS updated_at
     FROM card_ranges
     WHERE card_range_id = :1
+    "#
+}
+
+pub(crate) fn card_range_list_sql() -> &'static str {
+    r#"
+    SELECT
+        card_range_id,
+        start_card_number,
+        end_card_number,
+        funding_mode,
+        withdrawal_limit_authority,
+        JSON_SERIALIZE(limit_calendar_json RETURNING CLOB) AS limit_calendar_json,
+        status,
+        issuance_enabled,
+        cms_operation_mode,
+        operational_version,
+        JSON_SERIALIZE(metadata_json RETURNING CLOB) AS metadata_json,
+        created_by_subject,
+        updated_by_subject,
+        TO_CHAR(SYS_EXTRACT_UTC(created_at), 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS created_at,
+        TO_CHAR(SYS_EXTRACT_UTC(updated_at), 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS updated_at
+    FROM card_ranges
+    WHERE (:status IS NULL OR status = :status)
+      AND (:funding_mode IS NULL OR funding_mode = :funding_mode)
+      AND (:authority IS NULL OR withdrawal_limit_authority = :authority)
+      AND (
+          :cursor_created_at IS NULL
+          OR SYS_EXTRACT_UTC(created_at) > TO_TIMESTAMP(:cursor_created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"')
+          OR (
+              SYS_EXTRACT_UTC(created_at) = TO_TIMESTAMP(:cursor_created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"')
+              AND card_range_id > :cursor_id
+          )
+      )
+    ORDER BY created_at ASC, card_range_id ASC
+    FETCH NEXT :fetch_limit ROWS ONLY
     "#
 }
 
@@ -271,13 +368,19 @@ fn parse_utc(value: &str) -> DbResult<DateTime<Utc>> {
         .with_timezone(&Utc))
 }
 
+fn format_oracle_utc(value: DateTime<Utc>) -> String {
+    value.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
 fn read_error(error: oracle::Error) -> DbError {
     DbError::Query(format!("failed to read Oracle card range row: {error}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{card_range_insert_sql, card_range_overlap_sql, card_range_select_sql};
+    use super::{
+        card_range_insert_sql, card_range_list_sql, card_range_overlap_sql, card_range_select_sql,
+    };
 
     #[test]
     fn insert_sql_persists_range_structure_and_controls() {
@@ -304,5 +407,16 @@ mod tests {
 
         assert!(sql.contains("JSON_SERIALIZE(limit_calendar_json"));
         assert!(sql.contains("JSON_SERIALIZE(metadata_json"));
+    }
+
+    #[test]
+    fn list_sql_uses_allowlisted_filters_and_keyset_cursor() {
+        let sql = card_range_list_sql();
+
+        assert!(sql.contains("(:status IS NULL OR status = :status)"));
+        assert!(sql.contains("(:funding_mode IS NULL OR funding_mode = :funding_mode)"));
+        assert!(sql.contains("(:authority IS NULL OR withdrawal_limit_authority = :authority)"));
+        assert!(sql.contains("card_range_id > :cursor_id"));
+        assert!(sql.contains("FETCH NEXT :fetch_limit ROWS ONLY"));
     }
 }

@@ -20,10 +20,12 @@ impl AppKafkaProducer {
         client_config
             .set("bootstrap.servers", &prod_cfg.bootstrap_servers)
             .set("client.id", &prod_cfg.client_id)
-            .set("message.timeout.ms", &prod_cfg.message_timeout_ms.to_string())
+            .set(
+                "message.timeout.ms",
+                &prod_cfg.message_timeout_ms.to_string(),
+            )
             .set("security.protocol", &prod_cfg.security_protocol)
             .set("ssl.ca.location", &prod_cfg.security_cert);
-
 
         if prod_cfg.security_protocol != "PLAINTEXT" {
             if let (Some(mech), Some(user), Some(pass)) = (
@@ -53,9 +55,7 @@ impl AppKafkaProducer {
     pub async fn send_json(&self, topic: &str, key: &str, payload: &Value) -> Result<()> {
         let payload_str = serde_json::to_string(payload)?;
 
-        let record = FutureRecord::to(topic)
-            .key(key)
-            .payload(&payload_str);
+        let record = FutureRecord::to(topic).key(key).payload(&payload_str);
 
         self.producer
             .send(record, Timeout::After(self.timeout))

@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{
-        auth::require_scope,
+        auth::{TrustedActor, require_scope},
         command::{IdempotencyStart, IdempotencyStarter, MutationCommandContext},
         error::ApiError,
         result_codes::WurzburgResultCode,
@@ -11,7 +11,7 @@ use crate::{
     db::traits::{AuditRepository, CardRangeRepository, IdempotencyRepository},
     domain::{
         audit::{AuditAction, NewAuditLog},
-        card_range::{CardRange, NewCardRange},
+        card_range::{CardRange, CardRangeListPage, CardRangeListQuery, NewCardRange},
     },
 };
 
@@ -122,5 +122,38 @@ where
             })?;
 
         Ok(CreateCardRangeOutcome::Created(created))
+    }
+
+    #[tracing::instrument(skip(self, actor), fields(card_range_id = %card_range_id))]
+    pub async fn get_card_range(
+        &self,
+        actor: &TrustedActor,
+        card_range_id: Uuid,
+    ) -> Result<CardRange, ApiError> {
+        require_scope(actor, "platform.card_ranges:read")?;
+
+        self.repository
+            .get_card_range(card_range_id)
+            .await
+            .map_err(|error| {
+                ApiError::with_message(WurzburgResultCode::SystemError, error.to_string())
+            })?
+            .ok_or_else(|| ApiError::new(WurzburgResultCode::CardRangeNotFound))
+    }
+
+    #[tracing::instrument(skip(self, actor, query), fields(limit = query.limit))]
+    pub async fn list_card_ranges(
+        &self,
+        actor: &TrustedActor,
+        query: CardRangeListQuery,
+    ) -> Result<CardRangeListPage, ApiError> {
+        require_scope(actor, "platform.card_ranges:read")?;
+
+        self.repository
+            .list_card_ranges(query)
+            .await
+            .map_err(|error| {
+                ApiError::with_message(WurzburgResultCode::SystemError, error.to_string())
+            })
     }
 }

@@ -20,8 +20,11 @@ pub enum WurzburgResultCode {
     InvalidBackendTokenTransport,
     MissingRequiredScope,
     InvalidActorClaim,
+    InvalidWithdrawalLimitAuthority,
     InvalidCardRangeBoundary,
     CardRangeOverlap,
+    CardRangeNotFound,
+    InvalidCardRangeFilter,
     DatabaseUnavailable,
     DatabaseHealthUnavailable,
 }
@@ -125,6 +128,12 @@ impl WurzburgResultCode {
                 "Trusted actor claim is invalid",
                 StatusCode::UNAUTHORIZED,
             ),
+            Self::InvalidWithdrawalLimitAuthority => (
+                6399,
+                "INVALID_WITHDRAWAL_LIMIT_AUTHORITY",
+                "Withdrawal limit authority is invalid",
+                StatusCode::BAD_REQUEST,
+            ),
             Self::InvalidCardRangeBoundary => (
                 6400,
                 "INVALID_CARD_RANGE_BOUNDARY",
@@ -136,6 +145,18 @@ impl WurzburgResultCode {
                 "CARD_RANGE_OVERLAP",
                 "Card range overlaps an existing range",
                 StatusCode::CONFLICT,
+            ),
+            Self::CardRangeNotFound => (
+                6402,
+                "CARD_RANGE_NOT_FOUND",
+                "Card range was not found",
+                StatusCode::NOT_FOUND,
+            ),
+            Self::InvalidCardRangeFilter => (
+                6403,
+                "INVALID_CARD_RANGE_FILTER",
+                "Card range list filter or cursor is invalid",
+                StatusCode::BAD_REQUEST,
             ),
             Self::DatabaseUnavailable => (
                 6300,

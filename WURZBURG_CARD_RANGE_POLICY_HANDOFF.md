@@ -240,18 +240,25 @@ unique(CASE WHEN status = 'ACTIVE' THEN provider_id END)
 The final line is implemented as an Oracle function-based unique index and must
 be present in the clean baseline DDL.
 
-Every attach, suspend, reactivate, move, or detach command must write an
+Every eligibility transition caused by provider creation, provider lifecycle
+changes, provider deletion, or provider operational controls must write an
 immutable before/after snapshot to the common audit log in the same Oracle
 transaction as the current-state change. A second relationship-history table is
 not required unless audit query volume later proves that the common audit log is
 insufficient.
 
-Detach/suspend is an unconditional platform emergency command. Active cards,
-provider-user balances, and existing relationships do not block it. The command
-never deletes ledger accounts or financial history. It suspends affected card
-funding-source eligibility and requests CP refresh for affected cards. If a
-single-provider range, or a multi-provider range with no remaining ACTIVE
-provider, loses its final provider, Wurzburg also suspends the range.
+There is no standalone API whose business purpose is to remove a provider from
+behind a card range. Provider range eligibility is selected during provider
+creation or provider lifecycle workflows. A provider may be deleted only while
+it has no financial activity or transaction history. That deletion is a provider
+soft delete and removes the provider from active range eligibility without
+physically deleting eligibility history. Once a provider has any transaction
+history, it cannot be deleted; only lifecycle or operational suspension flows
+may stop new use. Any eligibility removal/suspension preserves ledger accounts
+and financial history, requests affected CP refresh, and publishes the required
+range-control update. If a single-provider range, or a multi-provider range with
+no remaining ACTIVE provider, loses its final active provider eligibility,
+Wurzburg also suspends the range.
 
 ### Trusted Audit Actor Context
 
@@ -649,15 +656,14 @@ Operational-control request:
 ### Range Providers
 
 ```text
-POST   /api/v1/card-ranges/{card_range_id}/providers/{provider_id}
-DELETE /api/v1/card-ranges/{card_range_id}/providers/{provider_id}
 GET    /api/v1/card-ranges/{card_range_id}/providers
 GET    /api/v1/providers/{provider_id}/card-ranges
 ```
 
-`DELETE` is the unconditional platform force-detach command described in the
-database rules. It requires a reason and returns `202` while range-control/CP
-materialization is pending.
+These endpoints are read-only CARD views over provider range eligibility.
+Eligibility writes are owned by provider creation and provider lifecycle
+workflows. Wurzburg must not expose a standalone CARD API that detaches a
+provider from a range.
 
 ### Range Policies
 
@@ -983,9 +989,10 @@ After this foundation, continue with:
    cache.
 7. Only ACTIVE providers may be attached, and the active-only unique constraint
    prevents one provider from joining two ranges.
-8. Force-detach succeeds despite active cards or non-zero balances, preserves
-   ledger/history, updates eligibility, refreshes affected CPs, and suspends a
-   range that loses its final provider.
+8. Provider deletion is allowed only before any financial activity or
+   transaction history exists; it soft-deletes the provider, removes active
+   range eligibility without deleting history, refreshes affected CPs, and
+   suspends a range that loses its final active provider.
 9. Every mutation records trusted WSO2 subject/client/provider context, canonical
    source IP, correlation/request IDs, reason, and before/after snapshots; spoofed
    public identity/forwarding headers are rejected or ignored.

@@ -22,8 +22,9 @@ use wurzburg::{
     domain::{
         audit::NewAuditLog,
         card_range::{
-            CardNumberRange, CardRange, CardRangeStatus, CmsOperationMode, FundingMode,
-            LimitCalendar, LimitWindowMode, NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
+            CardNumberRange, CardRange, CardRangeListCursor, CardRangeListPage, CardRangeListQuery,
+            CardRangeStatus, CmsOperationMode, FundingMode, LimitCalendar, LimitWindowMode,
+            NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
         },
         idempotency::{IdempotencyRecord, IdempotencyStatus, NewIdempotencyRecord},
     },
@@ -85,6 +86,47 @@ impl CardRangeRepository for MemoryCardRangeRepository {
             .ranges
             .get(&card_range_id)
             .cloned())
+    }
+
+    async fn list_card_ranges(&self, query: CardRangeListQuery) -> DbResult<CardRangeListPage> {
+        let mut items = self
+            .state
+            .lock()
+            .unwrap()
+            .ranges
+            .values()
+            .filter(|range| {
+                query.status.is_none_or(|status| range.status == status)
+                    && query
+                        .funding_mode
+                        .is_none_or(|funding_mode| range.funding_mode == funding_mode)
+                    && query
+                        .withdrawal_limit_authority
+                        .is_none_or(|authority| range.withdrawal_limit_authority == authority)
+                    && query.cursor.as_ref().is_none_or(|cursor| {
+                        range.created_at > cursor.created_at
+                            || (range.created_at == cursor.created_at
+                                && range.card_range_id > cursor.card_range_id)
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by_key(|range| (range.created_at, range.card_range_id));
+
+        let has_next_page = items.len() > usize::from(query.limit);
+        if has_next_page {
+            items.truncate(usize::from(query.limit));
+        }
+        let next_cursor = if has_next_page {
+            items.last().map(|range| CardRangeListCursor {
+                created_at: range.created_at,
+                card_range_id: range.card_range_id,
+            })
+        } else {
+            None
+        };
+
+        Ok(CardRangeListPage { items, next_cursor })
     }
 
     async fn card_range_overlaps(&self, _numbers: CardNumberRange) -> DbResult<bool> {
@@ -282,4 +324,84 @@ async fn replays_completed_idempotency_without_new_audit_or_insert() {
 
     assert_eq!(outcome, CreateCardRangeOutcome::Replayed(replay_snapshot));
     assert!(repository.state.lock().unwrap().audit_logs.is_empty());
+}
+
+#[tokio::test]
+async fn reads_existing_card_range_with_read_scope() {
+    let repository = MemoryCardRangeRepository::default();
+    let service = CardRangeService::new(repository.clone());
+    let context = command_context(vec![
+        "platform.card_ranges:write",
+        "platform.card_ranges:read",
+    ]);
+    let CreateCardRangeOutcome::Created(created) = service
+        .create_card_range(&context, new_card_range())
+        .await
+        .expect("card range creation should succeed")
+    else {
+        panic!("expected created outcome");
+    };
+
+    let found = service
+        .get_card_range(&context.actor, created.card_range_id)
+        .await
+        .expect("read scope should allow fetching the card range");
+
+    assert_eq!(found.card_range_id, created.card_range_id);
+}
+
+#[tokio::test]
+async fn lists_card_ranges_with_bounded_filters_and_cursor() {
+    let repository = MemoryCardRangeRepository::default();
+    let service = CardRangeService::new(repository.clone());
+    for _ in 0..3 {
+        let mut context = command_context(vec![
+            "platform.card_ranges:write",
+            "platform.card_ranges:read",
+        ]);
+        context.idempotency_key =
+            IdempotencyKey::from_validated(Uuid::new_v4().to_string()).unwrap();
+        context.request_hash = Uuid::new_v4().to_string();
+        service
+            .create_card_range(&context, new_card_range())
+            .await
+            .expect("card range creation should succeed");
+    }
+    let context = command_context(vec!["platform.card_ranges:read"]);
+
+    let first_page = service
+        .list_card_ranges(
+            &context.actor,
+            CardRangeListQuery::new(
+                Some(CardRangeStatus::Draft),
+                Some(FundingMode::SingleProvider),
+                Some(WithdrawalLimitAuthority::Platform),
+                None,
+                Some(2),
+            )
+            .expect("valid list query"),
+        )
+        .await
+        .expect("list should succeed");
+
+    assert_eq!(first_page.items.len(), 2);
+    assert!(first_page.next_cursor.is_some());
+
+    let second_page = service
+        .list_card_ranges(
+            &context.actor,
+            CardRangeListQuery::new(
+                Some(CardRangeStatus::Draft),
+                Some(FundingMode::SingleProvider),
+                Some(WithdrawalLimitAuthority::Platform),
+                first_page.next_cursor,
+                Some(2),
+            )
+            .expect("valid list query"),
+        )
+        .await
+        .expect("second list page should succeed");
+
+    assert_eq!(second_page.items.len(), 1);
+    assert!(second_page.next_cursor.is_none());
 }

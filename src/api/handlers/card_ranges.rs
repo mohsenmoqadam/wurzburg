@@ -3,10 +3,11 @@ use std::sync::Arc;
 use axum::{
     Json,
     body::Bytes,
-    extract::{OriginalUri, State},
+    extract::{OriginalUri, Path, Query, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -21,7 +22,8 @@ use crate::{
         result_codes::WurzburgResultCode,
     },
     domain::card_range::{
-        CardNumberRange, CmsOperationMode, FundingMode, LimitCalendar, LimitWindowMode,
+        CardNumberRange, CardRangeListCursor, CardRangeListPage, CardRangeListQuery,
+        CardRangeStatus, CmsOperationMode, FundingMode, LimitCalendar, LimitWindowMode,
         NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
     },
     services::card_range::{CardRangeService, CreateCardRangeOutcome},
@@ -59,6 +61,21 @@ pub struct CardRangeResponse {
     pub metadata: serde_json::Value,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ListCardRangesQuery {
+    pub status: Option<String>,
+    pub funding_mode: Option<String>,
+    pub withdrawal_limit_authority: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<u16>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListCardRangesResponse {
+    pub items: Vec<CardRangeResponse>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, ToSchema)]
@@ -113,23 +130,120 @@ pub enum LimitWindowModeDto {
 }
 
 #[utoipa::path(
+    get,
+    path = "/api/v1/card-ranges/{card_range_id}",
+    tag = "Card Ranges",
+    params(
+        ("card_range_id" = Uuid, Path, description = "Card range identifier.", example = json!("018f2f68-3f2f-7f57-9a0a-16ef9cc00a01")),
+        ("X-Correlation-Id" = String, Header, description = "WSO2 canonical business correlation ID.", example = json!("ce5c1b18-9050-49b2-9fd2-a2f208a56117")),
+        ("X-Request-Id" = Uuid, Header, description = "WSO2 unique HTTP attempt ID.", example = json!("ce5c1b18-9050-49b2-9fd2-a2f208a56118")),
+        ("X-WSO2-Client-IP" = String, Header, description = "Canonical original client IP.", example = json!("192.168.0.1")),
+        ("X-WSO2-Gateway-Id" = String, Header, description = "Trusted WSO2 gateway instance ID.", example = json!("wso2-dev-gateway-1")),
+        ("X-JWT-Assertion" = Option<String>, Header, description = "Alternative WSO2 backend assertion transport. Send the raw JWT without the Bearer prefix only when Wurzburg is configured for x_jwt_assertion.")
+    ),
+    security(("wso2_backend_bearer" = [])),
+    responses(
+        (status = 200, description = "Card range found", body = CardRangeResponse),
+        (status = 401, description = "Trusted actor assertion is missing or invalid", body = crate::api::error::ApiErrorResponse),
+        (status = 403, description = "Caller lacks platform.card_ranges:read", body = crate::api::error::ApiErrorResponse),
+        (status = 404, description = "Card range was not found", body = crate::api::error::ApiErrorResponse),
+        (status = 500, description = "Internal persistence failure", body = crate::api::error::ApiErrorResponse)
+    )
+)]
+#[tracing::instrument(skip(state, headers), fields(card_range_id = %card_range_id))]
+pub async fn get_card_range(
+    State(state): State<Arc<AppState>>,
+    Path(card_range_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let service = CardRangeService::new(state.db.clone());
+    let card_range = service.get_card_range(&actor, card_range_id).await?;
+
+    Ok(success_response(
+        StatusCode::OK,
+        CardRangeResponse::from(card_range),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/card-ranges",
+    tag = "Card Ranges",
+    params(
+        ("status" = Option<String>, Query, description = "Optional card range status filter: DRAFT, ACTIVE, or SUSPENDED.", example = json!("DRAFT")),
+        ("funding_mode" = Option<String>, Query, description = "Optional funding-mode filter: SINGLE_PROVIDER or MULTI_PROVIDER.", example = json!("SINGLE_PROVIDER")),
+        ("withdrawal_limit_authority" = Option<String>, Query, description = "Optional withdrawal authority filter: PLATFORM or CMS.", example = json!("PLATFORM")),
+        ("cursor" = Option<String>, Query, description = "Opaque cursor returned by the previous page."),
+        ("limit" = Option<u16>, Query, description = "Page size from 1 through 100. Defaults to 50.", example = json!(50)),
+        ("X-Correlation-Id" = String, Header, description = "WSO2 canonical business correlation ID.", example = json!("ce5c1b18-9050-49b2-9fd2-a2f208a56117")),
+        ("X-Request-Id" = Uuid, Header, description = "WSO2 unique HTTP attempt ID.", example = json!("ce5c1b18-9050-49b2-9fd2-a2f208a56118")),
+        ("X-WSO2-Client-IP" = String, Header, description = "Canonical original client IP.", example = json!("192.168.0.1")),
+        ("X-WSO2-Gateway-Id" = String, Header, description = "Trusted WSO2 gateway instance ID.", example = json!("wso2-dev-gateway-1")),
+        ("X-JWT-Assertion" = Option<String>, Header, description = "Alternative WSO2 backend assertion transport. Send the raw JWT without the Bearer prefix only when Wurzburg is configured for x_jwt_assertion.")
+    ),
+    security(("wso2_backend_bearer" = [])),
+    responses(
+        (status = 200, description = "Card ranges returned", body = ListCardRangesResponse),
+        (status = 400, description = "Invalid filter, cursor, or limit", body = crate::api::error::ApiErrorResponse),
+        (status = 401, description = "Trusted actor assertion is missing or invalid", body = crate::api::error::ApiErrorResponse),
+        (status = 403, description = "Caller lacks platform.card_ranges:read", body = crate::api::error::ApiErrorResponse),
+        (status = 500, description = "Internal persistence failure", body = crate::api::error::ApiErrorResponse)
+    )
+)]
+#[tracing::instrument(skip(state, headers, query), fields(limit = query.limit.unwrap_or_default()))]
+pub async fn list_card_ranges(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ListCardRangesQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let query = CardRangeListQuery::try_from(query)?;
+    let service = CardRangeService::new(state.db.clone());
+    let page = service.list_card_ranges(&actor, query).await?;
+
+    Ok(success_response(
+        StatusCode::OK,
+        ListCardRangesResponse::from(page),
+    ))
+}
+
+#[utoipa::path(
     post,
     path = "/api/v1/card-ranges",
     tag = "Card Ranges",
     request_body(
         content = CreateCardRangeRequest,
         description = "Creates a canonical card-number range and its initial control profile inputs.",
-        content_type = "application/json"
+        content_type = "application/json",
+        example = json!({
+            "cms_operation_mode": "FULL",
+            "start_card_number": "1111000000000000",
+            "end_card_number": "1111000000001111",
+            "funding_mode": "SINGLE_PROVIDER",
+            "withdrawal_limit_authority": "PLATFORM",
+            "limit_calendar": {
+                "timezone": "Asia/Tehran",
+                "week_starts_on": "SATURDAY",
+                "window_mode": "CALENDAR"
+            },
+            "issuance_enabled": true,
+            "metadata": {}
+        })
     ),
     params(
-        ("Idempotency-Key" = String, Header, description = "Required stable idempotency key for this mutation."),
-        ("X-Correlation-Id" = String, Header, description = "WSO2 canonical business correlation ID."),
-        ("X-Request-Id" = Uuid, Header, description = "WSO2 unique HTTP attempt ID."),
-        ("X-WSO2-Client-IP" = String, Header, description = "Canonical original client IP."),
-        ("X-WSO2-Gateway-Id" = String, Header, description = "Trusted WSO2 gateway instance ID."),
-        ("X-JWT-Assertion" = String, Header, description = "Configured WSO2 backend assertion transport when enabled."),
-        ("Authorization" = String, Header, description = "Bearer WSO2 backend assertion when Authorization transport is enabled.")
+        ("Idempotency-Key" = String, Header, description = "Required stable idempotency key for this mutation.", example = json!("ce5c1b18-9050-49b2-9fd2-a2f208a56116")),
+        ("X-Correlation-Id" = String, Header, description = "WSO2 canonical business correlation ID.", example = json!("ce5c1b18-9050-49b2-9fd2-a2f208a56117")),
+        ("X-Request-Id" = Uuid, Header, description = "WSO2 unique HTTP attempt ID.", example = json!("ce5c1b18-9050-49b2-9fd2-a2f208a56118")),
+        ("X-WSO2-Client-IP" = String, Header, description = "Canonical original client IP.", example = json!("192.168.0.1")),
+        ("X-WSO2-Gateway-Id" = String, Header, description = "Trusted WSO2 gateway instance ID.", example = json!("wso2-dev-gateway-1")),
+        ("X-JWT-Assertion" = Option<String>, Header, description = "Alternative WSO2 backend assertion transport. Send the raw JWT without the Bearer prefix only when Wurzburg is configured for x_jwt_assertion.")
     ),
+    security(("wso2_backend_bearer" = [])),
     responses(
         (status = 201, description = "Card range created", body = CardRangeResponse),
         (status = 200, description = "Previously completed idempotent response replayed", body = serde_json::Value),
@@ -206,6 +320,38 @@ impl TryFrom<CreateCardRangeRequest> for NewCardRange {
     }
 }
 
+impl TryFrom<ListCardRangesQuery> for CardRangeListQuery {
+    type Error = ApiError;
+
+    fn try_from(query: ListCardRangesQuery) -> Result<Self, Self::Error> {
+        CardRangeListQuery::new(
+            query
+                .status
+                .as_deref()
+                .map(parse_card_range_status)
+                .transpose()?,
+            query
+                .funding_mode
+                .as_deref()
+                .map(parse_funding_mode)
+                .transpose()?,
+            query
+                .withdrawal_limit_authority
+                .as_deref()
+                .map(parse_withdrawal_limit_authority)
+                .transpose()?,
+            query.cursor.as_deref().map(parse_cursor).transpose()?,
+            query.limit,
+        )
+        .map_err(|error| {
+            ApiError::with_message(
+                WurzburgResultCode::InvalidCardRangeFilter,
+                error.to_string(),
+            )
+        })
+    }
+}
+
 impl From<crate::domain::card_range::CardRange> for CardRangeResponse {
     fn from(card_range: crate::domain::card_range::CardRange) -> Self {
         Self {
@@ -222,6 +368,19 @@ impl From<crate::domain::card_range::CardRange> for CardRangeResponse {
             metadata: card_range.metadata_json,
             created_at: card_range.created_at,
             updated_at: card_range.updated_at,
+        }
+    }
+}
+
+impl From<CardRangeListPage> for ListCardRangesResponse {
+    fn from(page: CardRangeListPage) -> Self {
+        Self {
+            next_cursor: page.next_cursor.as_ref().map(format_cursor),
+            items: page
+                .items
+                .into_iter()
+                .map(CardRangeResponse::from)
+                .collect(),
         }
     }
 }
@@ -342,6 +501,72 @@ impl From<crate::domain::card_range::CardRangeStatus> for CardRangeStatusDto {
             crate::domain::card_range::CardRangeStatus::Suspended => Self::Suspended,
         }
     }
+}
+
+fn parse_card_range_status(value: &str) -> Result<CardRangeStatus, ApiError> {
+    match value {
+        "DRAFT" => Ok(CardRangeStatus::Draft),
+        "ACTIVE" => Ok(CardRangeStatus::Active),
+        "SUSPENDED" => Ok(CardRangeStatus::Suspended),
+        _ => Err(ApiError::with_details(
+            WurzburgResultCode::InvalidCardRangeFilter,
+            serde_json::json!({ "filter": "status" }),
+        )),
+    }
+}
+
+fn parse_funding_mode(value: &str) -> Result<FundingMode, ApiError> {
+    match value {
+        "SINGLE_PROVIDER" => Ok(FundingMode::SingleProvider),
+        "MULTI_PROVIDER" => Ok(FundingMode::MultiProvider),
+        _ => Err(ApiError::with_details(
+            WurzburgResultCode::InvalidCardRangeFilter,
+            serde_json::json!({ "filter": "funding_mode" }),
+        )),
+    }
+}
+
+fn parse_withdrawal_limit_authority(value: &str) -> Result<WithdrawalLimitAuthority, ApiError> {
+    match value {
+        "PLATFORM" => Ok(WithdrawalLimitAuthority::Platform),
+        "CMS" => Ok(WithdrawalLimitAuthority::Cms),
+        _ => Err(ApiError::with_details(
+            WurzburgResultCode::InvalidWithdrawalLimitAuthority,
+            serde_json::json!({ "filter": "withdrawal_limit_authority" }),
+        )),
+    }
+}
+
+fn parse_cursor(value: &str) -> Result<CardRangeListCursor, ApiError> {
+    let (created_at, card_range_id) = value.split_once('|').ok_or_else(invalid_cursor)?;
+    let created_at = DateTime::parse_from_rfc3339(created_at)
+        .map_err(|_| invalid_cursor())?
+        .with_timezone(&Utc);
+    let card_range_id = card_range_id
+        .parse::<Uuid>()
+        .map_err(|_| invalid_cursor())?;
+
+    Ok(CardRangeListCursor {
+        created_at,
+        card_range_id,
+    })
+}
+
+fn format_cursor(cursor: &CardRangeListCursor) -> String {
+    format!(
+        "{}|{}",
+        cursor
+            .created_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        cursor.card_range_id
+    )
+}
+
+fn invalid_cursor() -> ApiError {
+    ApiError::with_details(
+        WurzburgResultCode::InvalidCardRangeFilter,
+        serde_json::json!({ "filter": "cursor" }),
+    )
 }
 
 fn success_response<T>(status: StatusCode, body: T) -> Response

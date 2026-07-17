@@ -1,15 +1,15 @@
-use std::sync::Arc;
 use anyhow::Result;
-use tokio::sync::mpsc;
-use tokio::time::{interval, MissedTickBehavior};
+use std::sync::Arc;
 use tigerbeetle_rustclient_tests_snapshot::Client as TbClient;
+use tokio::sync::mpsc;
+use tokio::time::{MissedTickBehavior, interval};
 
-use crate::config::Settings;
-use crate::tigerbeetle::models::AppAccountBalance;
 use super::commands::TbCommand;
 use super::operations::{
     process_accounts, process_lookup_accounts, process_lookup_transfers, process_transfers,
 };
+use crate::config::Settings;
+use crate::tigerbeetle::models::AppAccountBalance;
 
 /// Spawns the background worker to handle batched requests for all TigerBeetle operations.
 pub async fn start_tb_worker(
@@ -75,8 +75,8 @@ pub async fn start_tb_worker(
                                 .lookup_accounts(&ids)
                                 .await
                                 .map_err(|e| e.to_string());
-                                
-                            let _ = response.send(result);        
+
+                            let _ = response.send(result);
                         }
                         Some(TbCommand::LookupTransfer { id, responder }) => {
                             lookup_tx_batch.push(id);

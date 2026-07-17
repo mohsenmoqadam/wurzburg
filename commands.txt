@@ -1,1 +1,2 @@
+cargo run --quiet --bin get-wurzburg-dev-jwt
 docker exec -it wurzburg_redis redis-cli
