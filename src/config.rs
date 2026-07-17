@@ -10,6 +10,8 @@ pub struct Settings {
     pub server: ServerConfig,
     pub swagger: SwaggerConfig,
     pub database: DatabaseConfig,
+    pub migrations: MigrationConfig,
+    pub wso2: Wso2Config,
     pub redis: RedisConfig,
     pub telemetry: TelemetryConfig,
     pub kafka: KafkaConfig,
@@ -33,14 +35,9 @@ pub struct SwaggerConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
-    pub active_driver: String,
-    pub postgres: DbDriverConfig,
-    pub oracle: DbDriverConfig,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct DbDriverConfig {
-    pub url: String,
+    pub username: String,
+    pub password: String,
+    pub connect_string: String,
     pub max_connections: u32,
     pub min_connections: u32,
     pub acquire_timeout_ms: u64,
@@ -48,6 +45,30 @@ pub struct DbDriverConfig {
     pub idle_timeout_ms: u64,
     pub max_lifetime_ms: u64,
     pub statement_cache_capacity: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MigrationConfig {
+    pub enabled: bool,
+    pub force_recreate: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Wso2Config {
+    pub backend_token_transport: BackendTokenTransport,
+    pub accepted_correlation_pattern: String,
+    pub issuer: String,
+    pub audience: String,
+    pub allowed_algorithms: Vec<String>,
+    pub clock_skew_seconds: u64,
+    pub public_key_pem: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendTokenTransport {
+    AuthorizationBearer,
+    XJwtAssertion,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -86,7 +107,7 @@ pub struct KafkaConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaProducerConfig {
-    pub bootstrap_servers: String, 
+    pub bootstrap_servers: String,
     pub client_id: String,
     pub message_timeout_ms: u64,
     pub max_request_size: u64,
@@ -100,7 +121,7 @@ pub struct KafkaProducerConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaAdminConfig {
-    pub bootstrap_servers: String, 
+    pub bootstrap_servers: String,
     pub request_timeout_ms: u64,
     pub kafka_bin_dir: String,
     pub partitions: u32,
@@ -109,7 +130,7 @@ pub struct KafkaAdminConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaConsumerDefaultsConfig {
-    pub bootstrap_servers: String, 
+    pub bootstrap_servers: String,
     pub session_timeout_ms: u64,
     pub auto_offset_reset: String,
     pub security_protocol: String,
@@ -146,13 +167,13 @@ pub struct ValidationConfig {
 pub struct ProviderValidationConfig {
     pub legal_name_min: usize,
     pub legal_name_msg: String,
-    
+
     pub trade_name_min: usize,
     pub trade_name_msg: String,
-    
+
     pub tax_id_min: usize,
     pub tax_id_msg: String,
-    
+
     pub email_msg: String,
     pub email_regex: String,
 }
@@ -165,7 +186,7 @@ pub struct TigerBeetleConfig {
     pub batch_max_size: usize,
     pub batch_timeout_ms: u64,
     pub channel_capacity: usize,
-    pub ledger_id: u32,      
+    pub ledger_id: u32,
     pub provider_account_code: u16,
     pub user_account_code: u16,
     pub system_account_code: u16,
@@ -192,6 +213,7 @@ impl Settings {
             .add_source(File::with_name("config/local").required(false))
             .add_source(
                 Environment::with_prefix("APP")
+                    .prefix_separator("_")
                     .separator("__")
                     .try_parsing(true),
             )
@@ -220,7 +242,7 @@ impl Settings {
     }
 }
 
-impl DbDriverConfig {
+impl DatabaseConfig {
     pub fn acquire_timeout(&self) -> Duration {
         Duration::from_millis(self.acquire_timeout_ms)
     }
@@ -270,20 +292,32 @@ impl KafkaConsumerDefaultsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_load_default_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("APP_ENVIRONMENT", "test") };
+
         let settings = Settings::new();
         assert!(settings.is_ok(), "Failed to load configuration");
 
         let settings = settings.unwrap();
-        assert_eq!(settings.server.port, 8080);
-        assert_eq!(settings.swagger.port, 8081);
-        assert_eq!(settings.database.active_driver, "postgres");
+        assert_eq!(settings.server.port, 65001);
+        assert_eq!(settings.swagger.port, 65002);
+        assert_eq!(settings.database.username, "wurzburg_user");
+        assert_eq!(
+            settings.database.connect_string,
+            "//87.247.175.207:1521/wurzburg"
+        );
     }
 
     #[test]
     fn test_environment_helpers() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
         unsafe { env::set_var("APP_ENVIRONMENT", "production") };
         assert!(Settings::is_production());
         assert!(!Settings::is_development());
@@ -291,5 +325,21 @@ mod tests {
         unsafe { env::set_var("APP_ENVIRONMENT", "development") };
         assert!(Settings::is_development());
         assert!(!Settings::is_production());
+    }
+
+    #[test]
+    fn test_environment_overrides_migration_force_recreate() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            env::set_var("APP_ENVIRONMENT", "test");
+            env::set_var("APP_MIGRATIONS__FORCE_RECREATE", "true");
+        }
+
+        let settings = Settings::new().expect("settings should load");
+        assert!(settings.migrations.force_recreate);
+
+        unsafe {
+            env::remove_var("APP_MIGRATIONS__FORCE_RECREATE");
+        }
     }
 }

@@ -9,10 +9,9 @@ port = 65002
 path = "/swagger-ui"
 
 [database]
-active_driver = "postgres"
-
-[database.postgres]
-url = "postgres://postgres:password@localhost:5432/nuremberg"
+username = "wurzburg_user"
+password = "wurzburg_pass"
+connect_string = "//87.247.175.207:1521/wurzburg"
 max_connections = 128
 min_connections = 64
 acquire_timeout_ms = 5000
@@ -21,15 +20,13 @@ idle_timeout_ms = 600000
 max_lifetime_ms = 1800000
 statement_cache_capacity = 100
 
-[database.oracle]
-url = "oracle://user:password@localhost:1521/XEPDB1"
-max_connections = 128
-min_connections = 64
-acquire_timeout_ms = 5000
-connect_timeout_ms = 5000
-idle_timeout_ms = 600000
-max_lifetime_ms = 1800000
-statement_cache_capacity = 100
+[migrations]
+enabled = true
+force_recreate = false
+
+[wso2]
+backend_token_transport = "authorization_bearer"
+accepted_correlation_pattern = "^[A-Za-z0-9._:-]{1,128}$"
 
 [redis]
 url = "redis://127.0.0.1:6379"

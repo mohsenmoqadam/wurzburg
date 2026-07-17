@@ -1,5 +1,11 @@
+pub mod auth;
+pub mod command;
+pub mod cors;
+pub mod error;
+pub mod handlers;
+pub mod idempotency;
+pub mod request_context;
+pub mod result_codes;
 pub mod router;
 pub mod swagger;
-pub mod handlers;
-pub mod cors;
 pub mod validation;
