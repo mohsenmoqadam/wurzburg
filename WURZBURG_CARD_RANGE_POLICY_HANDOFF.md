@@ -7,6 +7,10 @@ It is intentionally narrower than `WURZBURG_SERVICE_HANDOFF.md`. Its purpose is
 to preserve the current agreement for the next implementation step and to make
 the required Nuremberg contract change explicit.
 
+Production runtime storage is Dragonfly. References to Redis keys, commands, or
+Redis-compatible clients in this document describe the Dragonfly protocol
+contract; they do not introduce a separate Redis deployment.
+
 ## 1. Scope Of This Step
 
 The next implementation step focuses on the card-range and policy foundation.
@@ -254,6 +258,9 @@ provider, loses its final provider, Wurzburg also suspends the range.
 WSO2 owns human/service authentication. Wurzburg does not need a local table of
 WSO2 users, but it must receive cryptographically trusted actor context and
 persist it with every audit record.
+
+`WURZBURG_WSO2_HANDOFF.md` is the authoritative gateway/ESB contract. This
+section defines only the card-range audit facts consumed from that contract.
 
 Preferred identity transport:
 
@@ -831,7 +838,7 @@ card_range_allocation_locks
 card_range_providers
 card_policy_profiles
 runtime_materialization_receipts
-integration_outbox/business_operations shared with Provider slice
+integration_outbox shared with Provider slice
 idempotency_records if not already present
 ```
 
