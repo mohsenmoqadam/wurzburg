@@ -4,7 +4,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use super::handlers::{card_ranges, system};
+use super::handlers::{card_policies, card_ranges, system};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -13,6 +13,10 @@ use super::handlers::{card_ranges, system};
             card_ranges::create_card_range,
             card_ranges::get_card_range,
             card_ranges::list_card_ranges,
+            card_policies::set_card_policy,
+            card_policies::get_current_card_policy,
+            card_policies::get_card_policy,
+            card_policies::list_card_policies,
             system::db_health
     ),
     components(
@@ -28,6 +32,16 @@ use super::handlers::{card_ranges, system};
             card_ranges::LimitCalendarDto,
             card_ranges::WeekStartDayDto,
             card_ranges::LimitWindowModeDto,
+            card_policies::SetCardPolicyRequest,
+            card_policies::WithdrawalLimitsDto,
+            card_policies::WithdrawalWindowLimitDto,
+            card_policies::CardPolicyStatusDto,
+            card_policies::PolicyMutationDispositionDto,
+            card_policies::CardPolicyRecordResponse,
+            card_policies::CardPolicyResponse,
+            card_policies::SetCardPolicyResponse,
+            card_policies::ListCardPoliciesQuery,
+            card_policies::ListCardPoliciesResponse,
             system::DbHealthResponse,
             crate::api::error::ApiErrorResponse,
             crate::api::error::ApiErrorBody
@@ -35,6 +49,7 @@ use super::handlers::{card_ranges, system};
     ),
     tags(
         (name = "Card Ranges", description = "Platform-admin card range control APIs"),
+        (name = "Card Policies", description = "Platform-admin range policy APIs"),
         (name = "System", description = "Operational health APIs")
     )
 )]

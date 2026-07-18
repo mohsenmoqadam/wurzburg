@@ -119,6 +119,7 @@ CREATE TABLE business_config_audit (
 
 CREATE TABLE integration_outbox (
     outbox_event_id RAW(16) PRIMARY KEY,
+    operation_id RAW(16) NOT NULL UNIQUE,
     event_type VARCHAR2(150) NOT NULL,
     aggregate_type VARCHAR2(100) NOT NULL,
     aggregate_id RAW(16) NOT NULL,

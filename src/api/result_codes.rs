@@ -25,6 +25,10 @@ pub enum WurzburgResultCode {
     CardRangeOverlap,
     CardRangeNotFound,
     InvalidCardRangeFilter,
+    CardPolicyContractInvalid,
+    CardPolicyNotFound,
+    PolicyDraftFrozen,
+    PolicyMaterializationMismatch,
     DatabaseUnavailable,
     DatabaseHealthUnavailable,
 }
@@ -157,6 +161,30 @@ impl WurzburgResultCode {
                 "INVALID_CARD_RANGE_FILTER",
                 "Card range list filter or cursor is invalid",
                 StatusCode::BAD_REQUEST,
+            ),
+            Self::CardPolicyContractInvalid => (
+                6410,
+                "CARD_POLICY_CONTRACT_INVALID",
+                "Card policy does not match its range authority or limit contract",
+                StatusCode::BAD_REQUEST,
+            ),
+            Self::CardPolicyNotFound => (
+                6411,
+                "CARD_POLICY_NOT_FOUND",
+                "Card policy was not found",
+                StatusCode::NOT_FOUND,
+            ),
+            Self::PolicyDraftFrozen => (
+                6412,
+                "POLICY_DRAFT_FROZEN",
+                "Card policy draft is awaiting runtime materialization and cannot be edited",
+                StatusCode::CONFLICT,
+            ),
+            Self::PolicyMaterializationMismatch => (
+                6413,
+                "POLICY_MATERIALIZATION_MISMATCH",
+                "Runtime materialization receipt does not match the pending policy operation",
+                StatusCode::CONFLICT,
             ),
             Self::DatabaseUnavailable => (
                 6300,

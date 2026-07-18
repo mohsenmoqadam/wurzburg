@@ -24,6 +24,9 @@ Read this document first, then use the focused handoffs for implementation:
 - `WURZBURG_WSO2_HANDOFF.md`
   - mTLS/JWT trust boundary, canonical headers, roles/scopes
   - gateway retries, timeouts, rate limits, errors, tracing, ESB acceptance
+- `WOLFSBURG_SERVICE_HANDOFF.md`
+  - asynchronous event envelopes, CP/CPOL/CRCTL/FEE materialization
+  - Dragonfly ownership, receipts, ordering, reconciliation, and tracing
 - `docs/adr/0001-oracle-persistence-strategy.md`
   - Oracle persistence rationale and operational strategy
 - `docs/oracle/README.md`

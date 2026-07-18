@@ -99,6 +99,9 @@ fn verify_actor_jwt(assertion: &str, config: &Wso2Config) -> Result<VerifiedActo
     validation.algorithms = algorithms;
     validation.set_issuer(&[config.issuer.as_str()]);
     validation.set_audience(&[config.audience.as_str()]);
+    // jsonwebtoken validates expiration by default, but `nbf` is opt-in. The
+    // WSO2 assertion must not authorize a caller before its validity window.
+    validation.validate_nbf = true;
     validation.leeway = config.clock_skew_seconds;
 
     let decoding_key = DecodingKey::from_rsa_pem(config.public_key_pem.as_bytes())

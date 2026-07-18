@@ -42,6 +42,31 @@ QT5by9A9Zy4L+zd1B1AjdKJR7wVUm34+ngKETW95GK+sBX694tOmH7OrK1SA+M7k
 8wIDAQAB
 -----END PUBLIC KEY-----"#;
 
+#[derive(Debug, Clone)]
+pub struct TestJwtOptions {
+    pub issuer: String,
+    pub audience: String,
+    pub subject: String,
+    pub azp: Option<String>,
+    pub client_id: Option<String>,
+    pub exp: usize,
+    pub nbf: usize,
+}
+
+impl Default for TestJwtOptions {
+    fn default() -> Self {
+        Self {
+            issuer: "https://wso2.example.test".to_string(),
+            audience: "wurzburg-api".to_string(),
+            subject: "admin-1".to_string(),
+            azp: Some("portal".to_string()),
+            client_id: None,
+            exp: 2_000_000_000,
+            nbf: 1_600_000_000,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct TestJwtClaims {
     iss: String,
@@ -72,36 +97,80 @@ pub fn test_wso2_config() -> Wso2Config {
 
 #[allow(dead_code)]
 pub fn signed_platform_admin_jwt() -> String {
-    signed_test_jwt(Some("portal"), None)
+    signed_test_jwt(TestJwtOptions::default(), Algorithm::RS256)
 }
 
 #[allow(dead_code)]
 pub fn signed_conflicting_client_jwt() -> String {
-    signed_test_jwt(Some("portal-a"), Some("portal-b"))
+    signed_test_jwt(
+        TestJwtOptions {
+            azp: Some("portal-a".to_string()),
+            client_id: Some("portal-b".to_string()),
+            ..TestJwtOptions::default()
+        },
+        Algorithm::RS256,
+    )
 }
 
-fn signed_test_jwt(azp: Option<&str>, client_id: Option<&str>) -> String {
+#[allow(dead_code)]
+pub fn signed_test_jwt(options: TestJwtOptions, algorithm: Algorithm) -> String {
     let claims = TestJwtClaims {
-        iss: "https://wso2.example.test".to_string(),
-        aud: "wurzburg-api".to_string(),
-        sub: "admin-1".to_string(),
-        azp: azp.map(ToOwned::to_owned),
-        client_id: client_id.map(ToOwned::to_owned),
-        exp: 2_000_000_000,
-        nbf: 1_600_000_000,
+        iss: options.issuer,
+        aud: options.audience,
+        sub: options.subject,
+        azp: options.azp,
+        client_id: options.client_id,
+        exp: options.exp,
+        nbf: options.nbf,
         iat: 1_600_000_000,
         jti: uuid::Uuid::new_v4().to_string(),
         roles: vec!["wurzburg_platform_admin".to_string()],
         scope: vec![
             "platform.card_ranges:write".to_string(),
             "platform.card_ranges:read".to_string(),
+            "platform.policies:write".to_string(),
+            "platform.policies:read".to_string(),
         ],
     };
 
     encode(
-        &Header::new(Algorithm::RS256),
+        &Header::new(algorithm),
         &claims,
         &EncodingKey::from_rsa_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("valid test RSA key"),
     )
     .expect("test JWT should sign")
+}
+
+#[allow(dead_code)]
+pub fn signed_hs256_confusion_jwt() -> String {
+    let options = TestJwtOptions::default();
+    let claims = TestJwtClaims {
+        iss: options.issuer,
+        aud: options.audience,
+        sub: options.subject,
+        azp: options.azp,
+        client_id: options.client_id,
+        exp: options.exp,
+        nbf: options.nbf,
+        iat: 1_600_000_000,
+        jti: uuid::Uuid::new_v4().to_string(),
+        roles: vec!["wurzburg_platform_admin".to_string()],
+        scope: vec!["platform.card_ranges:read".to_string()],
+    };
+
+    encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(TEST_PUBLIC_KEY_PEM.as_bytes()),
+    )
+    .expect("HS256 confusion fixture should sign")
+}
+
+#[allow(dead_code)]
+pub fn unsigned_platform_admin_jwt() -> String {
+    let signed = signed_platform_admin_jwt();
+    let mut segments = signed.split('.');
+    let header = segments.next().expect("signed JWT header");
+    let claims = segments.next().expect("signed JWT claims");
+    format!("{header}.{claims}.")
 }

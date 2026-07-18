@@ -4,7 +4,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::handlers::{card_ranges, system};
+use super::handlers::{card_policies, card_ranges, system};
 use crate::telemetry::http::trace_http_request;
 use crate::{api::cors::manual_cors_middleware, state::AppState};
 
@@ -20,6 +20,18 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
         .route(
             "/card-ranges/{card_range_id}",
             get(card_ranges::get_card_range),
+        )
+        .route(
+            "/card-ranges/{card_range_id}/policy",
+            get(card_policies::get_current_card_policy).put(card_policies::set_card_policy),
+        )
+        .route(
+            "/card-ranges/{card_range_id}/policies",
+            get(card_policies::list_card_policies),
+        )
+        .route(
+            "/card-ranges/{card_range_id}/policies/{policy_id}",
+            get(card_policies::get_card_policy),
         )
         .nest("/system", system_routes);
 

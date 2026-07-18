@@ -289,6 +289,7 @@ mod tests {
         );
         assert!(migration.sql.contains("CREATE TABLE card_policy_profiles"));
         assert!(migration.sql.contains("uq_cpp_one_candidate"));
+        assert!(migration.sql.contains("ck_cpp_lifecycle_shape"));
     }
 
     #[test]

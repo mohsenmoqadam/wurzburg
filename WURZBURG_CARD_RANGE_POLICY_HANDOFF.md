@@ -290,27 +290,25 @@ and before/after JSON snapshots. IP is supporting evidence, not actor identity.
 
 ### `card_policy_profiles`
 
-Each policy profile is one immutable version for exactly one card range and is
-not reusable across ranges. Its lifecycle is stored on the same row.
+Each policy profile belongs to exactly one card range and is not reusable across
+ranges. A never-published DRAFT may be edited with full before/after audit.
+After publication is requested, that row is frozen; every later policy change
+creates a new version and profile ID.
 
 ```text
 card_policy_profile_id RAW(16) primary key
 card_range_id RAW(16) not null
 profile_json JSON not null
-status string: SCHEDULED | PUBLISHING | ACTIVE | SUPERSEDED | CANCELLED | PUBLICATION_FAILED
+status string: DRAFT | ACTIVE | SUPERSEDED
 version number not null
-effective_at timestamp with time zone
 superseded_by_profile_id RAW(16) nullable
-publication_operation_id RAW(16) not null
 created_by_subject string
+updated_by_subject string
 change_reason string not null
 activated_at timestamp with time zone nullable
 superseded_at timestamp with time zone nullable
-cancelled_by_subject string nullable
-cancelled_at timestamp with time zone nullable
-cancel_reason string nullable
 created_at timestamp with time zone
-status_updated_at timestamp with time zone
+updated_at timestamp with time zone
 ```
 
 Do not duplicate `funding_mode` as a policy scope field. The funding mode belongs
@@ -358,33 +356,34 @@ Validation rules:
 - `PLATFORM` requires a non-null `withdrawal_limits` object. Individual limits
   may be null/disabled.
 - `CMS` requires `withdrawal_limits = null`.
-- Every submitted profile is immutable from creation. Corrections create a new
-  profile ID; no status permits in-place policy-term edits.
-- `effective_at <= now` means publish as soon as the durable worker can process
-  it. A future value remains `SCHEDULED` until its due time.
-- At most one non-terminal candidate (`SCHEDULED`, `PUBLISHING`, or
-  `PUBLICATION_FAILED`) may exist per range. The API does not queue a calendar
-  of future profiles.
-- A second create request conflicts until the existing candidate is activated
-  or explicitly cancelled. Replacement is therefore a deliberate cancel-then-
-  create workflow.
-- Cancellation is allowed only before activation, requires a reason, and never
-  changes the current active policy. If no active policy exists, the range
-  remains non-operational.
-- The old ACTIVE profile remains active while its replacement is scheduled,
-  publishing, or publication-failed.
+- A DRAFT with no publication outbox operation may be edited in place. Every
+  edit is idempotent and audited.
+- Creating the publication outbox operation freezes the DRAFT. The technical
+  delivery state is read from `integration_outbox`; it is not duplicated in the
+  policy status.
+- `null` disables only that limit metric. A null transaction minimum means no
+  minimum, a null transaction maximum means no maximum, and null `max_amount`
+  or `max_count` disables that metric for its window. If both window fields are
+  null, the complete window is unrestricted.
+- The first ACTIVE provider eligibility attached to the range triggers
+  publication of the current DRAFT. There is no date-based activation.
+- Updating a range that already has an ACTIVE policy creates a new DRAFT
+  version. If the range has an ACTIVE provider, Wurzburg creates its publication
+  outbox operation in the same Oracle transaction.
+- The old ACTIVE profile remains active while its replacement is awaiting
+  outbox delivery or Wolfsburg materialization.
 - After Wolfsburg confirms materialization, one Oracle transaction marks the
-  candidate ACTIVE and the previous profile SUPERSEDED.
-- Old and cancelled rows remain permanently available for audit and FundingPlan
-  traceability.
+  DRAFT ACTIVE and the previous profile SUPERSEDED.
+- Policy rows cannot be cancelled or deleted. Old rows remain permanently
+  available for audit and FundingPlan traceability.
 
 Required constraints/indexes:
 
 ```text
 unique(card_range_id, version)
 unique(CASE WHEN status = 'ACTIVE' THEN card_range_id END)
-unique(CASE WHEN status IN ('SCHEDULED', 'PUBLISHING', 'PUBLICATION_FAILED') THEN card_range_id END)
-index(status, effective_at)
+unique(CASE WHEN status = 'DRAFT' THEN card_range_id END)
+index(card_range_id, status, version)
 ```
 
 ### Policy Usage Account Provisioning
@@ -493,7 +492,6 @@ Example:
   "card_range_id": "uuid",
   "funding_mode": "SingleProvider",
   "version": 3,
-  "effective_at": "2026-07-16T00:00:00Z",
   "withdrawal_limit_authority": "PLATFORM",
   "withdrawal_limits": {
     "per_transaction_min_amount": null,
@@ -531,7 +529,6 @@ CMS-authoritative Redis value:
   "card_range_id": "uuid",
   "funding_mode": "MultiProvider",
   "version": 1,
-  "effective_at": "2026-07-16T00:00:00Z",
   "withdrawal_limit_authority": "CMS",
   "withdrawal_limits": null,
   "calendar": null
@@ -553,31 +550,24 @@ Rules:
   range-scoped key from Redis, so a successful key replacement is visible to the
   next Confirm without TTL uncertainty.
 
-### Policy Activation And Publication
+### Policy Publication And Activation
 
-1. `POST .../policy` stores the immutable candidate and durable outbox operation,
-   then returns `202 Accepted` with `operation_id`, profile ID, status, and
-   `effective_at`.
-2. For future-dated profiles, the worker waits until `effective_at`. For
-   immediate profiles, publication starts as soon as the Oracle transaction
-   commits.
-3. The previous policy remains ACTIVE while the candidate is SCHEDULED,
-   PUBLISHING, or PUBLICATION_FAILED. If no previous policy exists, the range is
-   not operational.
-4. Wolfsburg writes the complete candidate CPOL value and emits a durable
-   materialization receipt containing operation ID, profile ID, Redis key,
-   version, and timestamp.
-5. Only after Wurzburg consumes that receipt does it mark the candidate ACTIVE
-   and the previous profile SUPERSEDED in one Oracle transaction. The Redis write
-   is the runtime switch; the receipt finalizes the control-plane state.
-6. `DEAD_LETTER` never changes the active policy. The candidate becomes
-   PUBLICATION_FAILED. A platform admin may retry publication or cancel the
-   candidate with a mandatory reason; automatic rollback is unnecessary because
-   the candidate never became active.
-7. The operation-status API and admin panel expose scheduled, publication,
-   materialization, and activation states. No fixed client-facing propagation
-   SLA is required, but operational metrics and alerts must measure lateness from
-   `effective_at`.
+1. Policy configuration creates or updates a DRAFT in Oracle. With no ACTIVE
+   provider eligibility, no CPOL publication is needed.
+2. The first ACTIVE provider attachment validates the DRAFT and atomically
+   writes provider eligibility plus `CARD_POLICY_PROFILE_PUBLISH_REQUESTED` and
+   range-control outbox events. The provider is not runtime-ready yet.
+3. If providers are already ACTIVE when policy terms change, Wurzburg creates a
+   replacement DRAFT and its publication outbox event in one Oracle transaction.
+4. A DRAFT is frozen as soon as a publication operation exists. Delivery retry,
+   lease, and dead-letter state belongs exclusively to `integration_outbox`.
+5. Wolfsburg writes the complete CPOL value and emits a durable materialization
+   receipt containing operation ID, profile ID, Redis key, version, and time.
+6. Only after Wurzburg consumes that receipt does one Oracle transaction mark
+   the DRAFT ACTIVE and the previous ACTIVE profile SUPERSEDED. The Dragonfly
+   write is the runtime switch; the receipt finalizes control-plane state.
+7. There is no policy cancellation or policy-specific retry API. Outbox retry is
+   automatic; a generic platform recovery subsystem handles dead letters.
 
 ## 5. `CP:{card_number}` Relationship
 
@@ -668,12 +658,10 @@ provider from a range.
 ### Range Policies
 
 ```text
-POST   /api/v1/card-ranges/{card_range_id}/policy
+PUT    /api/v1/card-ranges/{card_range_id}/policy
 GET    /api/v1/card-ranges/{card_range_id}/policy
 GET    /api/v1/card-ranges/{card_range_id}/policies
 GET    /api/v1/card-ranges/{card_range_id}/policies/{card_policy_profile_id}
-POST   /api/v1/card-ranges/{card_range_id}/policies/{card_policy_profile_id}/cancel
-POST   /api/v1/card-ranges/{card_range_id}/policies/{card_policy_profile_id}/retry-publication
 ```
 
 `GET .../policy` returns the complete ACTIVE profile composed with immutable
@@ -681,11 +669,10 @@ range authority/calendar. `GET .../policies` returns complete historical and
 candidate profiles with lifecycle/publication status; it is paginated newest
 version first.
 
-Platform-authoritative request:
+Platform-authoritative desired-policy request:
 
 ```json
 {
-  "effective_at": "2026-07-16T00:00:00Z",
   "reason": "new withdrawal thresholds",
   "withdrawal_limits": {
     "per_transaction_min_amount": null,
@@ -702,13 +689,14 @@ CMS-authoritative request:
 
 ```json
 {
-  "effective_at": "2026-07-16T00:00:00Z",
   "reason": "initial CMS-authoritative policy reference",
   "withdrawal_limits": null
 }
 ```
 
-Create response is always `202 Accepted`:
+With no ACTIVE provider, the response is `201 Created` for the first DRAFT or
+`200 OK` for an audited edit of that unfrozen DRAFT. When providers are already
+ACTIVE, a replacement returns `202 Accepted`:
 
 ```json
 {
@@ -716,9 +704,8 @@ Create response is always `202 Accepted`:
   "card_policy_profile_id": "uuid",
   "card_range_id": "uuid",
   "version": 3,
-  "status": "SCHEDULED",
-  "publication_status": "PENDING",
-  "effective_at": "2026-07-16T00:00:00Z"
+  "status": "DRAFT",
+  "publication_status": "PENDING"
 }
 ```
 
@@ -746,10 +733,10 @@ INVALID_CARD_RANGE_BOUNDARY
 CARD_RANGE_IMMUTABLE_FIELD
 CARD_RANGE_POLICY_REQUIRED
 POLICY_USAGE_ACCOUNTS_NOT_READY
-POLICY_CANDIDATE_ALREADY_EXISTS
-POLICY_NOT_CANCELLABLE
+POLICY_DRAFT_FROZEN
+CARD_POLICY_NOT_FOUND
 POLICY_PUBLICATION_PENDING
-POLICY_PUBLICATION_FAILED
+POLICY_MATERIALIZATION_MISMATCH
 RANGE_CONTROL_PUBLICATION_PENDING
 RANGE_CONTROL_NOT_FOUND
 RANGE_CONTROL_INVALID
@@ -880,7 +867,6 @@ pub struct CardPolicyProfile {
     pub funding_mode: FundingMode,
     pub withdrawal_limit_authority: WithdrawalLimitAuthority,
     pub version: u64,
-    pub effective_at: DateTime<Utc>,
     pub withdrawal_limits: Option<WithdrawalLimits>,
     pub calendar: Option<LimitCalendarPolicy>,
 }
@@ -941,7 +927,6 @@ pub struct FundingPlanPolicySnapshot {
     pub card_range_id: Uuid,
     pub funding_mode: FundingMode,
     pub policy_version: u64,
-    pub policy_effective_at: DateTime<Utc>,
     pub withdrawal_limit_authority: WithdrawalLimitAuthority,
     pub withdrawal_limits: Option<WithdrawalLimits>,
     pub calendar: Option<LimitCalendarPolicy>,
@@ -1002,12 +987,12 @@ After this foundation, continue with:
     ranges, and CP always carries the complete account set.
 12. PLATFORM policy accepts disabled individual windows; CMS policy requires
     null limits.
-13. Immediate and future policy creation return `202`, keep the prior policy
-    active, and activate only after Wolfsburg materialization receipt.
-14. Only one candidate policy may exist; cancellation requires a reason and
-    retains the immutable row; a second candidate requires cancel-then-create.
-15. Publication failure leaves the old policy active, marks the candidate
-    PUBLICATION_FAILED, and supports idempotent admin retry or cancellation.
+13. A policy remains DRAFT while no provider is attached. The first provider
+    attachment freezes and publishes it; there is no date-based scheduling.
+14. Only one DRAFT may exist. It is editable until a publication outbox
+    operation freezes it; later policy changes create a new version.
+15. Publication failure leaves the old policy active. Automatic outbox retry and
+    generic platform recovery handle delivery without policy-specific APIs.
 16. Changing limits creates a new immutable profile without replacing/zeroing
     usage accounts. Lower limits evaluate against existing live pending usage.
 17. CPOL and CRCTL missing/invalid cases fail closed in Nuremberg. PLATFORM also
