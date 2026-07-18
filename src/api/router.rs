@@ -23,7 +23,7 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
         )
         .nest("/system", system_routes);
 
-    let app = Router::new()
+    Router::new()
         .route("/ping", get(|| async { "pong" }))
         .nest("/api/v1", api_router)
         .with_state(state)
@@ -31,7 +31,5 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
             token_transport,
             trace_http_request,
         ))
-        .layer(axum::middleware::from_fn(manual_cors_middleware));
-
-    app
+        .layer(axum::middleware::from_fn(manual_cors_middleware))
 }

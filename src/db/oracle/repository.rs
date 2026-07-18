@@ -1,4 +1,4 @@
-use crate::db::{oracle::OraclePool, traits::AppRepository};
+use crate::db::oracle::OraclePool;
 
 #[derive(Clone)]
 pub struct OracleRepository {
@@ -10,5 +10,3 @@ impl OracleRepository {
         Self { pool }
     }
 }
-
-impl AppRepository for OracleRepository {}

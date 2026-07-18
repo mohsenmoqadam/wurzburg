@@ -1,75 +1,147 @@
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oracle::Row;
 use uuid::Uuid;
 
 use crate::{
+    api::command::MutationCommandContext,
     db::{
         error::{DbError, DbResult},
         oracle::{
             OracleRepository,
+            audit::insert_audit_log,
+            idempotency::{
+                complete_idempotency_record, fetch_idempotency_record, insert_idempotency_record,
+            },
             types::{raw16_to_uuid, uuid_to_raw16},
         },
-        traits::CardRangeRepository,
     },
-    domain::card_range::{
-        CardNumberRange, CardRange, CardRangeListCursor, CardRangeListPage, CardRangeListQuery,
-        CardRangeStatus, CmsOperationMode, FundingMode, LimitCalendar, LimitWindowMode,
-        NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
+    domain::{
+        audit::{AuditAction, NewAuditLog},
+        card_range::{
+            CardNumberRange, CardRange, CardRangeListCursor, CardRangeListPage, CardRangeListQuery,
+            CardRangeStatus, CmsOperationMode, FundingMode, LimitCalendar, LimitWindowMode,
+            NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
+        },
+        idempotency::IdempotencyStatus,
     },
 };
 
-#[async_trait]
-impl CardRangeRepository for OracleRepository {
-    async fn create_card_range(
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateCardRangePersistenceOutcome {
+    Created(CardRange),
+    Replayed(serde_json::Value),
+    IdempotencyConflict,
+    IdempotencyInProgress,
+    IdempotencyInvalidState,
+    Overlap,
+}
+
+impl OracleRepository {
+    #[tracing::instrument(
+        skip(self, command_context, card_range),
+        fields(db.system = "oracle", db.operation.name = "card_ranges.create")
+    )]
+    pub async fn create_card_range_atomic(
         &self,
+        command_context: MutationCommandContext,
         card_range: NewCardRange,
-        actor_subject: String,
-    ) -> DbResult<CardRange> {
-        self.pool
-            .with_transaction("card range creation", move |connection| {
-                let card_range_id = uuid_to_raw16(card_range.card_range_id).to_vec();
-                let limit_calendar_json = card_range
-                    .limit_calendar
-                    .as_ref()
-                    .map(limit_calendar_to_json_string)
-                    .transpose()?;
-                let metadata_json = card_range.metadata_json.to_string();
-                let issuance_enabled = if card_range.issuance_enabled {
-                    1_i32
-                } else {
-                    0_i32
-                };
+    ) -> DbResult<CreateCardRangePersistenceOutcome> {
+        let operation_type = command_context.operation_type.clone();
+        let idempotency_key = command_context.idempotency_key.as_str().to_string();
+        let request_hash = command_context.request_hash.clone();
+        let retry_operation_type = operation_type.clone();
+        let retry_idempotency_key = idempotency_key.clone();
+        let retry_request_hash = request_hash.clone();
+        let pool = self.pool.clone();
 
-                connection
-                    .execute(
-                        card_range_insert_sql(),
-                        &[
-                            &card_range_id,
-                            &card_range.numbers.start,
-                            &card_range.numbers.end,
-                            &card_range.funding_mode.as_db_value(),
-                            &card_range.withdrawal_limit_authority.as_db_value(),
-                            &limit_calendar_json,
-                            &CardRangeStatus::Draft.as_db_value(),
-                            &issuance_enabled,
-                            &card_range.cms_operation_mode.as_db_value(),
-                            &1_i64,
-                            &metadata_json,
-                            &actor_subject,
-                            &actor_subject,
-                        ],
+        let result = self
+            .pool
+            .with_transaction("atomic card range creation", move |connection| {
+                if let Some(existing) = traced_db_step("idempotency.lookup", || {
+                    fetch_idempotency_record(connection, &operation_type, &idempotency_key)
+                })? {
+                    return classify_idempotency(&existing, &request_hash);
+                }
+
+                traced_db_step("card_ranges.lock_structure", || {
+                    lock_card_range_structure(connection)
+                })?;
+                // A concurrent request may have completed while this command was
+                // waiting for the structural lock. Re-read before evaluating
+                // overlap so same-key retries replay the winner deterministically.
+                if let Some(existing) = traced_db_step("idempotency.recheck", || {
+                    fetch_idempotency_record(connection, &operation_type, &idempotency_key)
+                })? {
+                    return classify_idempotency(&existing, &request_hash);
+                }
+                if traced_db_step("card_ranges.check_overlap", || {
+                    card_range_overlaps(connection, &card_range.numbers)
+                })? {
+                    return Ok(CreateCardRangePersistenceOutcome::Overlap);
+                }
+
+                traced_db_step("idempotency.insert", || {
+                    insert_idempotency_record(connection, command_context.new_idempotency_record())
+                })?;
+                let created = traced_db_step("card_ranges.insert", || {
+                    insert_card_range(connection, card_range, &command_context.actor.subject)
+                })?;
+                let snapshot = created.replay_snapshot();
+
+                traced_db_step("audit_logs.insert", || {
+                    insert_audit_log(
+                        connection,
+                        NewAuditLog {
+                            audit_log_id: Uuid::new_v4(),
+                            entity_type: "CARD_RANGE".to_string(),
+                            entity_id: created.card_range_id,
+                            action_type: AuditAction::Insert,
+                            reason: Some("card range created".to_string()),
+                            old_values: None,
+                            new_values: Some(snapshot.clone()),
+                            context: command_context.audit_context(),
+                        },
                     )
-                    .map_err(|error| {
-                        DbError::Query(format!("failed to insert card range: {error}"))
-                    })?;
+                })?;
+                traced_db_step("idempotency.complete", || {
+                    complete_idempotency_record(
+                        connection,
+                        &operation_type,
+                        &idempotency_key,
+                        "card_range",
+                        created.card_range_id,
+                        snapshot,
+                    )
+                })?;
 
-                fetch_card_range(connection, card_range.card_range_id)
+                Ok(CreateCardRangePersistenceOutcome::Created(created))
             })
-            .await
+            .await;
+
+        match result {
+            Err(DbError::Conflict(_)) => {
+                pool.with_connection(move |connection| {
+                    let existing = fetch_idempotency_record(
+                        connection,
+                        &retry_operation_type,
+                        &retry_idempotency_key,
+                    )?
+                    .ok_or_else(|| {
+                        DbError::Query(
+                            "concurrent idempotency winner was not visible after conflict"
+                                .to_string(),
+                        )
+                    })?;
+                    classify_idempotency(&existing, &retry_request_hash)
+                })
+                .await
+            }
+            other => other,
+        }
     }
 
-    async fn get_card_range(&self, card_range_id: Uuid) -> DbResult<Option<CardRange>> {
+    #[tracing::instrument(skip(self), fields(db.system = "oracle", db.operation.name = "card_ranges.get"))]
+    pub async fn get_card_range(&self, card_range_id: Uuid) -> DbResult<Option<CardRange>> {
         self.pool
             .with_connection(
                 move |connection| match fetch_card_range(connection, card_range_id) {
@@ -81,7 +153,8 @@ impl CardRangeRepository for OracleRepository {
             .await
     }
 
-    async fn list_card_ranges(&self, query: CardRangeListQuery) -> DbResult<CardRangeListPage> {
+    #[tracing::instrument(skip(self, query), fields(db.system = "oracle", db.operation.name = "card_ranges.list"))]
+    pub async fn list_card_ranges(&self, query: CardRangeListQuery) -> DbResult<CardRangeListPage> {
         self.pool
             .with_connection(move |connection| {
                 let status = query.status.map(|value| value.as_db_value().to_string());
@@ -141,20 +214,99 @@ impl CardRangeRepository for OracleRepository {
             })
             .await
     }
+}
 
-    async fn card_range_overlaps(&self, numbers: CardNumberRange) -> DbResult<bool> {
-        self.pool
-            .with_connection(move |connection| {
-                let count = connection
-                    .query_row_as::<i64>(card_range_overlap_sql(), &[&numbers.end, &numbers.start])
-                    .map_err(|error| {
-                        DbError::Query(format!("failed to check card range overlap: {error}"))
-                    })?;
+fn traced_db_step<T>(
+    operation_name: &'static str,
+    operation: impl FnOnce() -> DbResult<T>,
+) -> DbResult<T> {
+    let span = tracing::info_span!(
+        "oracle.command.step",
+        db.system = "oracle",
+        db.operation.name = operation_name
+    );
+    let _guard = span.enter();
+    operation()
+}
 
-                Ok(count > 0)
-            })
-            .await
+fn classify_idempotency(
+    existing: &crate::domain::idempotency::IdempotencyRecord,
+    request_hash: &str,
+) -> DbResult<CreateCardRangePersistenceOutcome> {
+    if existing.request_hash != request_hash {
+        return Ok(CreateCardRangePersistenceOutcome::IdempotencyConflict);
     }
+
+    Ok(match existing.status {
+        IdempotencyStatus::Completed => existing
+            .response_snapshot
+            .clone()
+            .map(CreateCardRangePersistenceOutcome::Replayed)
+            .unwrap_or(CreateCardRangePersistenceOutcome::IdempotencyInvalidState),
+        IdempotencyStatus::InProgress => CreateCardRangePersistenceOutcome::IdempotencyInProgress,
+        IdempotencyStatus::Failed | IdempotencyStatus::Conflict => {
+            CreateCardRangePersistenceOutcome::IdempotencyInvalidState
+        }
+    })
+}
+
+fn lock_card_range_structure(connection: &oracle::Connection) -> DbResult<()> {
+    connection
+        .query_row_as::<String>(card_range_lock_sql(), &[&"CARD_RANGE_STRUCTURE"])
+        .map(|_| ())
+        .map_err(|error| DbError::Query(format!("failed to lock card range structure: {error}")))
+}
+
+fn card_range_overlaps(
+    connection: &oracle::Connection,
+    numbers: &CardNumberRange,
+) -> DbResult<bool> {
+    let count = connection
+        .query_row_as::<i64>(card_range_overlap_sql(), &[&numbers.end, &numbers.start])
+        .map_err(|error| DbError::Query(format!("failed to check card range overlap: {error}")))?;
+    Ok(count > 0)
+}
+
+fn insert_card_range(
+    connection: &oracle::Connection,
+    card_range: NewCardRange,
+    actor_subject: &str,
+) -> DbResult<CardRange> {
+    let card_range_id = uuid_to_raw16(card_range.card_range_id).to_vec();
+    let limit_calendar_json = card_range
+        .limit_calendar
+        .as_ref()
+        .map(limit_calendar_to_json_string)
+        .transpose()?;
+    let metadata_json = card_range.metadata_json.to_string();
+    let issuance_enabled = i32::from(card_range.issuance_enabled);
+
+    connection
+        .execute(
+            card_range_insert_sql(),
+            &[
+                &card_range_id,
+                &card_range.numbers.start,
+                &card_range.numbers.end,
+                &card_range.funding_mode.as_db_value(),
+                &card_range.withdrawal_limit_authority.as_db_value(),
+                &limit_calendar_json,
+                &CardRangeStatus::Draft.as_db_value(),
+                &issuance_enabled,
+                &card_range.cms_operation_mode.as_db_value(),
+                &1_i64,
+                &metadata_json,
+                &actor_subject,
+                &actor_subject,
+            ],
+        )
+        .map_err(|error| DbError::Query(format!("failed to insert card range: {error}")))?;
+
+    fetch_card_range(connection, card_range.card_range_id)
+}
+
+pub(crate) fn card_range_lock_sql() -> &'static str {
+    "SELECT lock_name FROM card_range_allocation_locks WHERE lock_name = :1 FOR UPDATE"
 }
 
 pub(crate) fn card_range_insert_sql() -> &'static str {
@@ -379,7 +531,8 @@ fn read_error(error: oracle::Error) -> DbError {
 #[cfg(test)]
 mod tests {
     use super::{
-        card_range_insert_sql, card_range_list_sql, card_range_overlap_sql, card_range_select_sql,
+        card_range_insert_sql, card_range_list_sql, card_range_lock_sql, card_range_overlap_sql,
+        card_range_select_sql,
     };
 
     #[test]
@@ -399,6 +552,14 @@ mod tests {
 
         assert!(sql.contains("start_card_number <= :1"));
         assert!(sql.contains("end_card_number >= :2"));
+    }
+
+    #[test]
+    fn structural_lock_serializes_overlap_decisions() {
+        let sql = card_range_lock_sql();
+
+        assert!(sql.contains("card_range_allocation_locks"));
+        assert!(sql.contains("FOR UPDATE"));
     }
 
     #[test]

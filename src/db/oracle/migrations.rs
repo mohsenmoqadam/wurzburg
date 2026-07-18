@@ -42,6 +42,7 @@ impl OracleMigrator {
                     "business_config",
                     "audit_logs",
                     "idempotency_records",
+                    "card_range_allocation_locks",
                     "oracle_migration_locks",
                     "schema_migrations",
                 ] {
@@ -300,5 +301,11 @@ mod tests {
         assert!(migration.sql.contains("CREATE TABLE idempotency_records"));
         assert!(migration.sql.contains("CREATE TABLE audit_logs"));
         assert!(migration.sql.contains("request_id VARCHAR2(128) NOT NULL"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE card_range_allocation_locks")
+        );
+        assert!(migration.sql.contains("CARD_RANGE_STRUCTURE"));
     }
 }

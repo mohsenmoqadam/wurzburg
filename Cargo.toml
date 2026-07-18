@@ -39,7 +39,6 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 regex = "1.12.3"
 tower-http = { version = "0.6.11", features = ["trace", "cors"] }
 
-async-trait = "0.1.89"
 chrono = { version = "0.4.44", features = ["serde"] }
 oracle = { version = "0.6.3", features = ["chrono"] }
 

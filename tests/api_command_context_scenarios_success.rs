@@ -1,82 +1,15 @@
-use std::{collections::HashMap, net::IpAddr, sync::Mutex};
+use std::net::IpAddr;
 
-use async_trait::async_trait;
-use chrono::Utc;
 use uuid::Uuid;
 use wurzburg::{
     api::{
         auth::{TrustedActor, VerifiedActorClaims},
-        command::{IdempotencyStart, IdempotencyStarter, MutationCommandContext},
+        command::MutationCommandContext,
         idempotency::IdempotencyKey,
         request_context::{BackendToken, TrustedRequestContext},
     },
     config::BackendTokenTransport,
-    db::{error::DbResult, traits::IdempotencyRepository},
-    domain::idempotency::{IdempotencyRecord, IdempotencyStatus, NewIdempotencyRecord},
 };
-
-#[derive(Default)]
-struct MemoryIdempotencyRepository {
-    records: Mutex<HashMap<(String, String), IdempotencyRecord>>,
-}
-
-#[async_trait]
-impl IdempotencyRepository for MemoryIdempotencyRepository {
-    async fn get_idempotency_record(
-        &self,
-        operation_type: &str,
-        idempotency_key: &str,
-    ) -> DbResult<Option<IdempotencyRecord>> {
-        Ok(self
-            .records
-            .lock()
-            .unwrap()
-            .get(&(operation_type.to_string(), idempotency_key.to_string()))
-            .cloned())
-    }
-
-    async fn create_idempotency_record(&self, record: NewIdempotencyRecord) -> DbResult<()> {
-        let now = Utc::now();
-        self.records.lock().unwrap().insert(
-            (
-                record.operation_type.clone(),
-                record.idempotency_key.clone(),
-            ),
-            IdempotencyRecord {
-                idempotency_record_id: record.idempotency_record_id,
-                operation_type: record.operation_type,
-                idempotency_key: record.idempotency_key,
-                request_hash: record.request_hash,
-                status: IdempotencyStatus::InProgress,
-                resource_type: None,
-                resource_id: None,
-                response_snapshot: None,
-                error_snapshot: None,
-                created_by_subject: record.created_by_subject,
-                created_by_client_id: record.created_by_client_id,
-                actor_provider_id: record.actor_provider_id,
-                actor_user_id: record.actor_user_id,
-                correlation_id: record.correlation_id,
-                request_id: record.request_id,
-                created_at: now,
-                updated_at: now,
-                completed_at: None,
-            },
-        );
-        Ok(())
-    }
-
-    async fn complete_idempotency_record(
-        &self,
-        _operation_type: &str,
-        _idempotency_key: &str,
-        _resource_type: &str,
-        _resource_id: Uuid,
-        _response_snapshot: serde_json::Value,
-    ) -> DbResult<()> {
-        Ok(())
-    }
-}
 
 fn command_context() -> MutationCommandContext {
     let provider_id = Uuid::new_v4();
@@ -108,24 +41,17 @@ fn command_context() -> MutationCommandContext {
     }
 }
 
-#[tokio::test]
-async fn starts_new_idempotent_mutation_when_record_is_absent() {
-    let repository = MemoryIdempotencyRepository::default();
+#[test]
+fn builds_idempotency_record_from_trusted_command_context() {
     let context = command_context();
+    let record = context.new_idempotency_record();
 
-    let start = repository
-        .start_idempotent_mutation(&context)
-        .await
-        .expect("new command should execute");
-
-    assert_eq!(start, IdempotencyStart::Execute);
-    assert!(
-        repository
-            .get_idempotency_record("card_ranges.create", "idem-001")
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert_eq!(record.operation_type, "card_ranges.create");
+    assert_eq!(record.idempotency_key, "idem-001");
+    assert_eq!(record.request_hash, "hash-001");
+    assert_eq!(record.created_by_subject, "admin@example.test");
+    assert_eq!(record.created_by_client_id.as_deref(), Some("admin-ui"));
+    assert_eq!(record.correlation_id, "corr-001");
 }
 
 #[test]

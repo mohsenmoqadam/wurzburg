@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 
 use crate::{
     api::result_codes::WurzburgResultCode,
+    db::error::DbError,
     telemetry::http::{RESULT_CODE_HEADER, RESULT_SYMBOL_HEADER},
 };
 
@@ -56,6 +57,21 @@ impl ApiError {
         }
     }
 
+    pub fn from_database(error: DbError) -> Self {
+        let diagnostic_kind = error.diagnostic_kind();
+        tracing::error!(
+            db.system = "oracle",
+            error.kind = diagnostic_kind,
+            "Oracle operation failed"
+        );
+
+        if error.is_connection_failure() {
+            Self::new(WurzburgResultCode::DatabaseUnavailable)
+        } else {
+            Self::new(WurzburgResultCode::SystemError)
+        }
+    }
+
     pub fn status(&self) -> StatusCode {
         self.result_code.parts().3
     }
@@ -95,7 +111,11 @@ impl IntoResponse for ApiError {
 }
 
 impl From<serde_json::Error> for ApiError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::with_message(WurzburgResultCode::SerializationError, error.to_string())
+    fn from(_error: serde_json::Error) -> Self {
+        tracing::error!(
+            error.kind = "serialization",
+            "Response serialization failed"
+        );
+        Self::new(WurzburgResultCode::SerializationError)
     }
 }

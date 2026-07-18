@@ -32,9 +32,10 @@ pub async fn db_health(
 ) -> Result<Json<DbHealthResponse>, ApiError> {
     match state.oracle_health.as_ref() {
         Some(oracle_health) => {
-            let health = oracle_health.check().await.map_err(|error| {
-                ApiError::with_message(WurzburgResultCode::DatabaseUnavailable, error.to_string())
-            })?;
+            let health = oracle_health
+                .check()
+                .await
+                .map_err(ApiError::from_database)?;
 
             Ok(Json(DbHealthResponse {
                 status: "ok".to_string(),

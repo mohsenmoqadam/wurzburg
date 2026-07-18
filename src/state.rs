@@ -6,14 +6,13 @@ use crate::config::Settings;
 use crate::db::oracle::{
     OracleConnectConfig, OracleHealthRepository, OraclePool, OracleRepository,
 };
-use crate::db::traits::AppRepository;
 use crate::kafka::{AppKafkaAdmin, AppKafkaProducer};
 use crate::tigerbeetle::{AppTbClient, start_tb_worker};
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Settings>,
-    pub db: Arc<dyn AppRepository>,
+    pub db: Arc<OracleRepository>,
     pub oracle_health: Option<OracleHealthRepository>,
     pub redis: RedisPool,
     pub kafka_producer: AppKafkaProducer,
@@ -32,7 +31,7 @@ impl AppState {
             .await
             .context("Failed to connect to Oracle")?;
         let oracle_health = OracleHealthRepository::new(oracle_pool.clone());
-        let db: Arc<dyn AppRepository> = Arc::new(OracleRepository::new(oracle_pool));
+        let db = Arc::new(OracleRepository::new(oracle_pool));
 
         // 2. Setup Redis Pool
         let mut redis_cfg = RedisConfig::from_url(config.redis.url.clone());

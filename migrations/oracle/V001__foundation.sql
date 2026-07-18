@@ -12,6 +12,13 @@ CREATE TABLE oracle_migration_locks (
 
 INSERT INTO oracle_migration_locks (lock_name) VALUES ('WURZBURG_SCHEMA_MIGRATION');
 
+CREATE TABLE card_range_allocation_locks (
+    lock_name VARCHAR2(64) PRIMARY KEY,
+    created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
+);
+
+INSERT INTO card_range_allocation_locks (lock_name) VALUES ('CARD_RANGE_STRUCTURE');
+
 CREATE TABLE idempotency_records (
     idempotency_record_id RAW(16) PRIMARY KEY,
     operation_type VARCHAR2(100) NOT NULL,

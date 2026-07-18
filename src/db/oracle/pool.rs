@@ -72,7 +72,9 @@ impl OraclePool {
         T: Send + 'static,
     {
         let pool = self.inner.clone();
+        let parent_span = tracing::Span::current();
         task::spawn_blocking(move || {
+            let _span_guard = parent_span.enter();
             let connection = pool.get().map_err(|error| {
                 DbError::Connection(format!("failed to acquire Oracle connection: {error}"))
             })?;
@@ -89,22 +91,34 @@ impl OraclePool {
         T: Send + 'static,
     {
         let pool = self.inner.clone();
+        let parent_span = tracing::Span::current();
         task::spawn_blocking(move || {
+            let _span_guard = parent_span.enter();
             let connection = pool.get().map_err(|error| {
                 DbError::Connection(format!("failed to acquire Oracle connection: {error}"))
             })?;
 
             match operation(&connection) {
                 Ok(value) => {
-                    commit(&connection, context)?;
-                    Ok(value)
+                    if let Err(commit_error) = commit(&connection, context) {
+                        if let Err(rollback_error) = rollback(&connection, context) {
+                            tracing::error!(
+                                operation = context,
+                                error.kind = rollback_error.diagnostic_kind(),
+                                "failed to rollback Oracle transaction after commit failure"
+                            );
+                        }
+                        Err(commit_error)
+                    } else {
+                        Ok(value)
+                    }
                 }
                 Err(error) => {
                     if let Err(rollback_error) = rollback(&connection, context) {
                         tracing::error!(
                             operation = context,
-                            rollback_error = %rollback_error,
-                            original_error = %error,
+                            rollback_error.kind = rollback_error.diagnostic_kind(),
+                            original_error.kind = error.diagnostic_kind(),
                             "failed to rollback Oracle transaction"
                         );
                     }

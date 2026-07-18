@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oracle::Row;
 use uuid::Uuid;
@@ -6,135 +5,110 @@ use uuid::Uuid;
 use crate::{
     db::{
         error::{DbError, DbResult},
-        oracle::{
-            OracleRepository,
-            types::{raw16_to_uuid, uuid_to_raw16},
-        },
-        traits::IdempotencyRepository,
+        oracle::types::{raw16_to_uuid, uuid_to_raw16},
     },
     domain::idempotency::{IdempotencyRecord, IdempotencyStatus, NewIdempotencyRecord},
 };
 
-#[async_trait]
-impl IdempotencyRepository for OracleRepository {
-    async fn get_idempotency_record(
-        &self,
-        operation_type: &str,
-        idempotency_key: &str,
-    ) -> DbResult<Option<IdempotencyRecord>> {
-        let operation_type = operation_type.to_string();
-        let idempotency_key = idempotency_key.to_string();
+pub(crate) fn fetch_idempotency_record(
+    connection: &oracle::Connection,
+    operation_type: &str,
+    idempotency_key: &str,
+) -> DbResult<Option<IdempotencyRecord>> {
+    let mut rows = connection
+        .query(
+            idempotency_select_sql(),
+            &[&operation_type, &idempotency_key],
+        )
+        .map_err(|error| DbError::Query(format!("failed to fetch idempotency record: {error}")))?;
 
-        self.pool
-            .with_connection(move |connection| {
-                let mut rows = connection
-                    .query(
-                        idempotency_select_sql(),
-                        &[&operation_type, &idempotency_key],
-                    )
-                    .map_err(|error| {
-                        DbError::Query(format!("failed to fetch idempotency record: {error}"))
-                    })?;
+    match rows.next() {
+        Some(Ok(row)) => map_idempotency_row(&row).map(Some),
+        Some(Err(error)) => Err(DbError::Query(format!(
+            "failed to read idempotency record: {error}"
+        ))),
+        None => Ok(None),
+    }
+}
 
-                match rows.next() {
-                    Some(Ok(row)) => map_idempotency_row(&row).map(Some),
-                    Some(Err(error)) => Err(DbError::Query(format!(
-                        "failed to read idempotency record: {error}"
-                    ))),
-                    None => Ok(None),
-                }
-            })
-            .await
+pub(crate) fn insert_idempotency_record(
+    connection: &oracle::Connection,
+    record: NewIdempotencyRecord,
+) -> DbResult<()> {
+    let idempotency_record_id = uuid_to_raw16(record.idempotency_record_id).to_vec();
+    let actor_provider_id = record
+        .actor_provider_id
+        .map(|value| uuid_to_raw16(value).to_vec());
+    let actor_user_id = record
+        .actor_user_id
+        .map(|value| uuid_to_raw16(value).to_vec());
+
+    connection
+        .execute(
+            idempotency_insert_sql(),
+            &[
+                &idempotency_record_id,
+                &record.operation_type,
+                &record.idempotency_key,
+                &record.request_hash,
+                &IdempotencyStatus::InProgress.as_db_value(),
+                &record.created_by_subject,
+                &record.created_by_client_id,
+                &actor_provider_id,
+                &actor_user_id,
+                &record.correlation_id,
+                &record.request_id,
+            ],
+        )
+        .map_err(|error| {
+            if is_unique_constraint_violation(&error) {
+                DbError::Conflict("idempotency record already exists".to_string())
+            } else {
+                DbError::Query(format!("failed to create idempotency record: {error}"))
+            }
+        })?;
+
+    Ok(())
+}
+
+pub(crate) fn complete_idempotency_record(
+    connection: &oracle::Connection,
+    operation_type: &str,
+    idempotency_key: &str,
+    resource_type: &str,
+    resource_id: Uuid,
+    response_snapshot: serde_json::Value,
+) -> DbResult<()> {
+    let resource_id = uuid_to_raw16(resource_id).to_vec();
+    let response_snapshot = response_snapshot.to_string();
+    let statement = connection
+        .execute(
+            idempotency_complete_sql(),
+            &[
+                &resource_type,
+                &resource_id,
+                &response_snapshot,
+                &operation_type,
+                &idempotency_key,
+            ],
+        )
+        .map_err(|error| {
+            DbError::Query(format!("failed to complete idempotency record: {error}"))
+        })?;
+
+    let updated = statement.row_count().map_err(|error| {
+        DbError::Query(format!(
+            "failed to read idempotency completion row count: {error}"
+        ))
+    })?;
+
+    if updated != 1 {
+        return Err(DbError::Query(
+            "idempotency completion affected an unexpected row count".to_string(),
+        ));
     }
 
-    async fn create_idempotency_record(&self, record: NewIdempotencyRecord) -> DbResult<()> {
-        self.pool
-            .with_transaction("idempotency record creation", move |connection| {
-                let idempotency_record_id = uuid_to_raw16(record.idempotency_record_id).to_vec();
-                let actor_provider_id = record
-                    .actor_provider_id
-                    .map(|value| uuid_to_raw16(value).to_vec());
-                let actor_user_id = record
-                    .actor_user_id
-                    .map(|value| uuid_to_raw16(value).to_vec());
-
-                connection
-                    .execute(
-                        idempotency_insert_sql(),
-                        &[
-                            &idempotency_record_id,
-                            &record.operation_type,
-                            &record.idempotency_key,
-                            &record.request_hash,
-                            &IdempotencyStatus::InProgress.as_db_value(),
-                            &record.created_by_subject,
-                            &record.created_by_client_id,
-                            &actor_provider_id,
-                            &actor_user_id,
-                            &record.correlation_id,
-                            &record.request_id,
-                        ],
-                    )
-                    .map_err(|error| {
-                        if is_unique_constraint_violation(&error) {
-                            DbError::Conflict("idempotency record already exists".to_string())
-                        } else {
-                            DbError::Query(format!("failed to create idempotency record: {error}"))
-                        }
-                    })?;
-
-                Ok(())
-            })
-            .await
-    }
-
-    async fn complete_idempotency_record(
-        &self,
-        operation_type: &str,
-        idempotency_key: &str,
-        resource_type: &str,
-        resource_id: Uuid,
-        response_snapshot: serde_json::Value,
-    ) -> DbResult<()> {
-        let operation_type = operation_type.to_string();
-        let idempotency_key = idempotency_key.to_string();
-        let resource_type = resource_type.to_string();
-        let resource_id = uuid_to_raw16(resource_id).to_vec();
-        let response_snapshot = response_snapshot.to_string();
-
-        self.pool
-            .with_transaction("idempotency record completion", move |connection| {
-                let statement = connection
-                    .execute(
-                        idempotency_complete_sql(),
-                        &[
-                            &resource_type,
-                            &resource_id,
-                            &response_snapshot,
-                            &operation_type,
-                            &idempotency_key,
-                        ],
-                    )
-                    .map_err(|error| {
-                        DbError::Query(format!("failed to complete idempotency record: {error}"))
-                    })?;
-
-                let updated = statement.row_count().map_err(|error| {
-                    DbError::Query(format!(
-                        "failed to read idempotency completion row count: {error}"
-                    ))
-                })?;
-
-                if updated == 0 {
-                    return Err(DbError::Query(
-                        "idempotency record was not found for completion".to_string(),
-                    ));
-                }
-
-                Ok(())
-            })
-            .await
-    }
+    Ok(())
 }
 
 pub(crate) fn idempotency_insert_sql() -> &'static str {
@@ -259,7 +233,7 @@ fn read_error(error: oracle::Error) -> DbError {
     DbError::Query(format!("failed to read Oracle idempotency row: {error}"))
 }
 
-fn is_unique_constraint_violation(error: &oracle::Error) -> bool {
+pub(crate) fn is_unique_constraint_violation(error: &oracle::Error) -> bool {
     error.to_string().contains("ORA-00001")
 }
 

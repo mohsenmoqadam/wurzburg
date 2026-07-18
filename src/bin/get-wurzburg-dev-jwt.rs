@@ -14,7 +14,7 @@
 //! `cargo run --bin get-wurzburg-dev-jwt`
 
 use chrono::Utc;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::Serialize;
 use uuid::Uuid;
 

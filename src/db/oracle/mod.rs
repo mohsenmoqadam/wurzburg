@@ -8,6 +8,7 @@ pub mod repository;
 pub mod transaction;
 pub mod types;
 
+pub use card_range::CreateCardRangePersistenceOutcome;
 pub use health::{OracleHealth, OracleHealthRepository};
 pub use migrations::{OracleMigration, OracleMigrator, prepare_oracle_schema, wurzburg_migrations};
 pub use pool::{OracleConnectConfig, OraclePool};

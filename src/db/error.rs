@@ -27,4 +27,20 @@ impl fmt::Display for DbError {
 
 impl Error for DbError {}
 
+impl DbError {
+    pub fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::Configuration(_) => "configuration",
+            Self::Connection(_) => "connection",
+            Self::Conflict(_) => "conflict",
+            Self::Query(_) => "query",
+            Self::BlockingTask(_) => "blocking_task",
+        }
+    }
+
+    pub fn is_connection_failure(&self) -> bool {
+        matches!(self, Self::Connection(_) | Self::BlockingTask(_))
+    }
+}
+
 pub type DbResult<T> = Result<T, DbError>;

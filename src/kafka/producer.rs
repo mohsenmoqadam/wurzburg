@@ -22,7 +22,7 @@ impl AppKafkaProducer {
             .set("client.id", &prod_cfg.client_id)
             .set(
                 "message.timeout.ms",
-                &prod_cfg.message_timeout_ms.to_string(),
+                prod_cfg.message_timeout_ms.to_string(),
             )
             .set("security.protocol", &prod_cfg.security_protocol)
             .set("ssl.ca.location", &prod_cfg.security_cert);
