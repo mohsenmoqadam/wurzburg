@@ -8,8 +8,12 @@ use uuid::Uuid;
 use wurzburg::{
     api::router::build_app_router,
     config::Settings,
-    db::oracle::{OraclePool, PolicyReceiptPersistenceOutcome, prepare_oracle_schema},
+    db::oracle::{
+        OraclePool, PolicyReceiptPersistenceOutcome, RangeControlReceiptOutcome,
+        prepare_oracle_schema,
+    },
     domain::card_policy::PolicyMaterializationReceipt,
+    kafka::contract::RuntimeMaterializationReceipt,
     state::AppState,
 };
 
@@ -167,6 +171,133 @@ async fn manages_policy_lifecycle_through_running_wurzburg_and_oracle() {
     assert_eq!(active["status"], "ACTIVE");
     assert_eq!(active["card_policy_profile_id"], policy_id.to_string());
 
+    // Range activation is a real asynchronous runtime-control command. Oracle
+    // state, audit, idempotency, and CRCTL outbox evidence commit together;
+    // only Wolfsburg's matching receipt advances the materialized version.
+    let (activate_status, activated) = mutate_range(
+        &client,
+        address,
+        card_range_id,
+        "activate",
+        serde_json::json!({"reason":"activate fully provisioned range"}),
+    )
+    .await;
+    assert_eq!(
+        activate_status,
+        reqwest::StatusCode::ACCEPTED,
+        "{activated}"
+    );
+    assert_eq!(activated["card_range"]["status"], "ACTIVE");
+    let control_operation = uuid_field(&activated, "operation_id");
+    let control_version = activated["card_range"]["operational_version"]
+        .as_i64()
+        .unwrap();
+
+    let (pending_status, pending_operation) =
+        get_operation(&client, address, control_operation).await;
+    assert_eq!(pending_status, reqwest::StatusCode::OK);
+    assert_eq!(
+        pending_operation["event_type"],
+        "CARD_RANGE_CONTROL_PUBLISH_REQUESTED"
+    );
+    assert_eq!(pending_operation["status"], "PENDING");
+
+    let control_receipt = RuntimeMaterializationReceipt {
+        receipt_event_id: Uuid::new_v4(),
+        operation_id: control_operation,
+        profile_type: "CRCTL".to_string(),
+        aggregate_id: card_range_id,
+        profile_id: None,
+        materialized_version: control_version,
+        runtime_key: format!("CRCTL:{card_range_id}"),
+        materialized_at: Utc::now(),
+    };
+    let mismatched_control_receipt = RuntimeMaterializationReceipt {
+        receipt_event_id: Uuid::new_v4(),
+        runtime_key: format!("CRCTL:wrong-{card_range_id}"),
+        ..control_receipt.clone()
+    };
+    assert_eq!(
+        repository
+            .apply_range_control_receipt(mismatched_control_receipt.clone())
+            .await
+            .unwrap(),
+        RangeControlReceiptOutcome::Mismatch
+    );
+    assert_eq!(
+        repository
+            .apply_range_control_receipt(mismatched_control_receipt)
+            .await
+            .unwrap(),
+        RangeControlReceiptOutcome::Mismatch
+    );
+    assert_eq!(
+        repository
+            .apply_range_control_receipt(control_receipt.clone())
+            .await
+            .unwrap(),
+        RangeControlReceiptOutcome::Materialized
+    );
+    assert_eq!(
+        repository
+            .apply_range_control_receipt(control_receipt)
+            .await
+            .unwrap(),
+        RangeControlReceiptOutcome::Replayed
+    );
+    let (_, materialized_operation) = get_operation(&client, address, control_operation).await;
+    assert_eq!(materialized_operation["status"], "MATERIALIZED");
+
+    // A semantic no-op is not a new business command: it creates no version,
+    // outbox event, audit row, or idempotency completion.
+    let (no_op_status, no_op_body) = mutate_range(
+        &client,
+        address,
+        card_range_id,
+        "operational-controls",
+        serde_json::json!({
+            "issuance_enabled": true,
+            "cms_operation_mode": "FULL",
+            "reason": "must not manufacture a runtime version"
+        }),
+    )
+    .await;
+    assert_eq!(
+        no_op_status,
+        reqwest::StatusCode::BAD_REQUEST,
+        "{no_op_body}"
+    );
+    assert_eq!(no_op_body["error"]["rs_code"], 6400);
+
+    // Structural edits are frozen after activation, while operational controls
+    // remain versioned asynchronous commands.
+    let patch_response = client.patch(format!("http://{address}/api/v1/card-ranges/{card_range_id}"))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("Idempotency-Key", Uuid::new_v4().to_string())
+        .header("X-Correlation-Id", "active-range-immutable")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.10")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({"start_card_number":"7111111111111111","end_card_number":"7111111111111199","funding_mode":"SINGLE_PROVIDER","withdrawal_limit_authority":"PLATFORM","limit_calendar":{"timezone":"Asia/Tehran","week_starts_on":"SATURDAY","window_mode":"CALENDAR"},"issuance_enabled":true,"cms_operation_mode":"FULL","metadata":{},"reason":"forbidden structural edit"}).to_string())
+        .send().await.unwrap();
+    assert_eq!(patch_response.status(), reqwest::StatusCode::CONFLICT);
+    assert!(
+        patch_response
+            .text()
+            .await
+            .unwrap()
+            .contains("CARD_RANGE_IMMUTABLE_FIELD")
+    );
+
+    let (control_status, controls) = mutate_range(
+        &client, address, card_range_id, "operational-controls",
+        serde_json::json!({"issuance_enabled":false,"cms_operation_mode":"BALANCE_ONLY","reason":"temporary operational restriction"}),
+    ).await;
+    assert_eq!(control_status, reqwest::StatusCode::ACCEPTED, "{controls}");
+    assert_eq!(controls["card_range"]["issuance_enabled"], false);
+    assert_eq!(controls["card_range"]["cms_operation_mode"], "BALANCE_ONLY");
+
     // A replacement freezes immediately because the range already has an
     // active provider, but the previous ACTIVE policy remains operational.
     let replacement_body = policy_body(3_000_000, Some(30), "replace active policy");
@@ -256,6 +387,71 @@ async fn manages_policy_lifecycle_through_running_wurzburg_and_oracle() {
         count_policies(&repository.pool, concurrent_range_id).await,
         1
     );
+
+    // The real Oracle relay lease is recoverable and preserves typed event
+    // identity across retries. Broker I/O is intentionally outside this DB
+    // transaction and is covered by the separately gated Kafka smoke test.
+    let relay_worker = format!("integration-relay-{}", Uuid::new_v4());
+    let claimed = repository
+        .claim_outbox_batch(relay_worker.clone(), 50, 45_000)
+        .await
+        .expect("outbox batch should lease");
+    assert!(!claimed.is_empty());
+    assert!(
+        claimed
+            .iter()
+            .all(|event| event.envelope.schema_version == 1)
+    );
+    let retried_event_id = claimed[0].envelope.event_id;
+    repository
+        .reschedule_outbox_event(retried_event_id, relay_worker.clone(), false, 0)
+        .await
+        .expect("delivery uncertainty should reschedule");
+    let reclaimed = repository
+        .claim_outbox_batch(relay_worker.clone(), 50, 45_000)
+        .await
+        .expect("rescheduled event should be claimable");
+    let retried = reclaimed
+        .iter()
+        .find(|event| event.envelope.event_id == retried_event_id)
+        .expect("same immutable event should be retried");
+    assert!(retried.attempt_count >= 2);
+    repository
+        .mark_outbox_published(retried_event_id, relay_worker)
+        .await
+        .expect("broker acknowledgement should finalize publication");
+
+    // A malformed Kafka record stores only deterministic transport evidence;
+    // replaying the same topic/partition/offset remains idempotent.
+    repository
+        .record_kafka_poison_message(
+            "receipt.test".to_string(),
+            0,
+            42,
+            Some("00".repeat(32)),
+            "RECEIPT_ENVELOPE_INVALID",
+        )
+        .await
+        .unwrap();
+    repository
+        .record_kafka_poison_message(
+            "receipt.test".to_string(),
+            0,
+            42,
+            Some("00".repeat(32)),
+            "RECEIPT_ENVELOPE_INVALID",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        count_poison(&repository.pool, "receipt.test", 0, 42).await,
+        1
+    );
+}
+
+async fn count_poison(pool: &OraclePool, topic: &str, partition: i32, offset: i64) -> i64 {
+    let topic = topic.to_string();
+    pool.with_connection(move |connection| connection.query_row_as::<i64>("SELECT COUNT(*) FROM kafka_poison_messages WHERE topic_name=:1 AND partition_id=:2 AND message_offset=:3", &[&topic, &partition, &offset]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))).await.unwrap()
 }
 
 async fn start_server(state: Arc<AppState>) -> std::net::SocketAddr {
@@ -375,6 +571,56 @@ async fn get_current_policy(
         .unwrap();
     let status = response.status();
     let body = response.text().await.unwrap();
+    (status, body)
+}
+
+async fn mutate_range(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    card_range_id: Uuid,
+    action: &str,
+    body: serde_json::Value,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let url = format!("http://{address}/api/v1/card-ranges/{card_range_id}/{action}");
+    let request = if action == "operational-controls" {
+        client.put(url)
+    } else {
+        client.post(url)
+    };
+    let response = request
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("Idempotency-Key", Uuid::new_v4().to_string())
+        .header("X-Correlation-Id", format!("range-{action}"))
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.10")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    (status, serde_json::from_str(&text).unwrap())
+}
+
+async fn get_operation(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    operation_id: Uuid,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let response = client
+        .get(format!("http://{address}/api/v1/operations/{operation_id}"))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("X-Correlation-Id", "operation-status")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.10")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     (status, body)
 }
 

@@ -1,6 +1,7 @@
 use wurzburg::domain::card_range::{
-    CardNumberRange, CardRangeError, LimitCalendar, LimitWindowMode, WeekStartDay,
-    WithdrawalLimitAuthority, normalize_card_number, validate_authority_calendar,
+    CardNumberRange, CardRangeControlChange, CardRangeError, CmsOperationMode, LimitCalendar,
+    LimitWindowMode, WeekStartDay, WithdrawalLimitAuthority, normalize_card_number,
+    validate_authority_calendar,
 };
 
 fn tehran_calendar() -> LimitCalendar {
@@ -9,6 +10,18 @@ fn tehran_calendar() -> LimitCalendar {
         week_starts_on: WeekStartDay::Saturday,
         window_mode: LimitWindowMode::Calendar,
     }
+}
+
+#[test]
+fn rejects_operational_control_change_without_audit_reason() {
+    let error = CardRangeControlChange {
+        issuance_enabled: false,
+        cms_operation_mode: CmsOperationMode::Blocked,
+        reason: "".to_string(),
+    }
+    .validate()
+    .expect_err("audit reason is mandatory");
+    assert_eq!(error, CardRangeError::InvalidReason);
 }
 
 #[test]

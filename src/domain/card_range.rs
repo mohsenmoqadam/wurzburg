@@ -196,11 +196,79 @@ pub struct CardRange {
     pub issuance_enabled: bool,
     pub cms_operation_mode: CmsOperationMode,
     pub operational_version: i64,
+    pub materialized_operational_version: i64,
+    pub range_control_operation_id: Option<Uuid>,
     pub metadata_json: serde_json::Value,
     pub created_by_subject: String,
     pub updated_by_subject: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DraftCardRangeUpdate {
+    pub numbers: Option<CardNumberRange>,
+    pub funding_mode: Option<FundingMode>,
+    pub withdrawal_limit_authority: Option<WithdrawalLimitAuthority>,
+    pub limit_calendar: Option<Option<LimitCalendar>>,
+    pub issuance_enabled: Option<bool>,
+    pub cms_operation_mode: Option<CmsOperationMode>,
+    pub metadata_json: Option<serde_json::Value>,
+    pub reason: String,
+}
+
+impl DraftCardRangeUpdate {
+    pub fn apply_to(&self, current: &CardRange) -> CardRangeResult<NewCardRange> {
+        validate_reason(&self.reason)?;
+        if self.numbers.is_none()
+            && self.funding_mode.is_none()
+            && self.withdrawal_limit_authority.is_none()
+            && self.limit_calendar.is_none()
+            && self.issuance_enabled.is_none()
+            && self.cms_operation_mode.is_none()
+            && self.metadata_json.is_none()
+        {
+            return Err(CardRangeError::EmptyMutation);
+        }
+        let desired = NewCardRange {
+            card_range_id: current.card_range_id,
+            numbers: self
+                .numbers
+                .clone()
+                .unwrap_or_else(|| current.numbers.clone()),
+            funding_mode: self.funding_mode.unwrap_or(current.funding_mode),
+            withdrawal_limit_authority: self
+                .withdrawal_limit_authority
+                .unwrap_or(current.withdrawal_limit_authority),
+            limit_calendar: self
+                .limit_calendar
+                .clone()
+                .unwrap_or_else(|| current.limit_calendar.clone()),
+            issuance_enabled: self.issuance_enabled.unwrap_or(current.issuance_enabled),
+            cms_operation_mode: self
+                .cms_operation_mode
+                .unwrap_or(current.cms_operation_mode),
+            metadata_json: self
+                .metadata_json
+                .clone()
+                .unwrap_or_else(|| current.metadata_json.clone()),
+        };
+        desired.validate()?;
+        Ok(desired)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardRangeControlChange {
+    pub issuance_enabled: bool,
+    pub cms_operation_mode: CmsOperationMode,
+    pub reason: String,
+}
+
+impl CardRangeControlChange {
+    pub fn validate(&self) -> CardRangeResult<()> {
+        validate_reason(&self.reason)
+    }
 }
 
 impl CardRange {
@@ -277,6 +345,14 @@ impl CardRangeProviderStatus {
             Self::Suspended => "SUSPENDED",
         }
     }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "ACTIVE" => Some(Self::Active),
+            "SUSPENDED" => Some(Self::Suspended),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +363,8 @@ pub enum CardRangeError {
     InvalidPageLimit,
     PlatformAuthorityRequiresCalendar,
     CmsAuthorityRequiresNoCalendar,
+    EmptyMutation,
+    InvalidReason,
 }
 
 impl fmt::Display for CardRangeError {
@@ -315,8 +393,21 @@ impl fmt::Display for CardRangeError {
                 formatter,
                 "CMS withdrawal authority requires a null limit calendar"
             ),
+            Self::EmptyMutation => write!(formatter, "at least one card range field must change"),
+            Self::InvalidReason => write!(
+                formatter,
+                "change reason must contain 1 through 1000 characters"
+            ),
         }
     }
+}
+
+fn validate_reason(reason: &str) -> CardRangeResult<()> {
+    let reason = reason.trim();
+    if reason.is_empty() || reason.len() > 1000 || reason.chars().any(char::is_control) {
+        return Err(CardRangeError::InvalidReason);
+    }
+    Ok(())
 }
 
 impl std::error::Error for CardRangeError {}

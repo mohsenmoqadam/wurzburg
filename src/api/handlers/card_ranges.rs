@@ -21,17 +21,24 @@ use crate::{
         request_context::extract_trusted_request_context,
         result_codes::WurzburgResultCode,
     },
+    db::oracle::CardRangeMutation,
     domain::card_range::{
-        CardNumberRange, CardRangeListCursor, CardRangeListPage, CardRangeListQuery,
-        CardRangeStatus, CmsOperationMode, FundingMode, LimitCalendar, LimitWindowMode,
-        NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
+        CardNumberRange, CardRangeControlChange, CardRangeListCursor, CardRangeListPage,
+        CardRangeListQuery, CardRangeStatus, CmsOperationMode, DraftCardRangeUpdate, FundingMode,
+        LimitCalendar, LimitWindowMode, NewCardRange, WeekStartDay, WithdrawalLimitAuthority,
     },
-    services::card_range::{CardRangeService, CreateCardRangeOutcome},
+    services::card_range::{
+        CardRangeMutationServiceOutcome, CardRangeService, CreateCardRangeOutcome,
+    },
     state::AppState,
     telemetry::http::{RESULT_CODE_HEADER, RESULT_SYMBOL_HEADER},
 };
 
 const CREATE_CARD_RANGE_OPERATION: &str = "card_ranges.create";
+const UPDATE_CARD_RANGE_OPERATION: &str = "card_ranges.update_draft";
+const ACTIVATE_CARD_RANGE_OPERATION: &str = "card_ranges.activate";
+const SUSPEND_CARD_RANGE_OPERATION: &str = "card_ranges.suspend";
+const UPDATE_CARD_RANGE_CONTROLS_OPERATION: &str = "card_ranges.update_controls";
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateCardRangeRequest {
@@ -58,9 +65,67 @@ pub struct CardRangeResponse {
     pub issuance_enabled: bool,
     pub cms_operation_mode: CardRangeCmsOperationModeDto,
     pub operational_version: i64,
+    pub materialized_operational_version: i64,
+    pub range_control_operation_id: Option<Uuid>,
     pub metadata: serde_json::Value,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateDraftCardRangeRequest {
+    pub start_card_number: String,
+    pub end_card_number: String,
+    pub funding_mode: CardRangeFundingModeDto,
+    pub withdrawal_limit_authority: CardRangeWithdrawalLimitAuthorityDto,
+    pub limit_calendar: Option<LimitCalendarDto>,
+    pub issuance_enabled: bool,
+    pub cms_operation_mode: CardRangeCmsOperationModeDto,
+    pub metadata: serde_json::Value,
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CardRangeTransitionRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateCardRangeControlsRequest {
+    pub issuance_enabled: bool,
+    pub cms_operation_mode: CardRangeCmsOperationModeDto,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CardRangeMutationResponse {
+    pub operation_id: Option<Uuid>,
+    pub card_range: CardRangeResponse,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CardRangeProviderEligibilityResponse {
+    pub provider_id: Uuid,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListCardRangeProvidersResponse {
+    pub items: Vec<CardRangeProviderEligibilityResponse>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct IntegrationOperationResponse {
+    pub operation_id: Uuid,
+    pub event_id: Uuid,
+    pub event_type: String,
+    pub aggregate_type: String,
+    pub aggregate_id: Uuid,
+    pub status: String,
+    pub attempt_count: i64,
+    pub created_at: DateTime<Utc>,
+    pub published_at: Option<DateTime<Utc>>,
+    pub materialized_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -289,9 +354,257 @@ pub async fn create_card_range(
     {
         CreateCardRangeOutcome::Created(card_range) => Ok(success_response(
             StatusCode::CREATED,
-            CardRangeResponse::from(card_range),
+            CardRangeResponse::from(*card_range),
         )),
         CreateCardRangeOutcome::Replayed(snapshot) => {
+            Ok(success_response(StatusCode::OK, snapshot))
+        }
+    }
+}
+
+#[utoipa::path(patch, path="/api/v1/card-ranges/{card_range_id}", tag="Card Ranges", request_body=UpdateDraftCardRangeRequest, params(("card_range_id"=Uuid, Path), ("Idempotency-Key"=String, Header)), responses((status=200, body=CardRangeMutationResponse), (status=409, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
+pub async fn update_draft_card_range(
+    State(state): State<Arc<AppState>>,
+    Path(card_range_id): Path<Uuid>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let (context, request) = mutation_request::<UpdateDraftCardRangeRequest>(
+        &state,
+        &method,
+        uri.path(),
+        &headers,
+        &body,
+        UPDATE_CARD_RANGE_OPERATION,
+    )?;
+    let update = DraftCardRangeUpdate {
+        numbers: Some(
+            CardNumberRange::new(request.start_card_number, request.end_card_number).map_err(
+                |error| {
+                    ApiError::with_message(
+                        WurzburgResultCode::InvalidCardRangeBoundary,
+                        error.to_string(),
+                    )
+                },
+            )?,
+        ),
+        funding_mode: Some(request.funding_mode.into()),
+        withdrawal_limit_authority: Some(request.withdrawal_limit_authority.into()),
+        limit_calendar: Some(request.limit_calendar.map(Into::into)),
+        issuance_enabled: Some(request.issuance_enabled),
+        cms_operation_mode: Some(request.cms_operation_mode.into()),
+        metadata_json: Some(request.metadata),
+        reason: request.reason,
+    };
+    mutation_response(
+        CardRangeService::new(state.db.clone())
+            .mutate_card_range(
+                &context,
+                card_range_id,
+                CardRangeMutation::UpdateDraft(update),
+            )
+            .await?,
+        StatusCode::OK,
+    )
+}
+
+#[utoipa::path(post, path="/api/v1/card-ranges/{card_range_id}/activate", tag="Card Ranges", request_body=CardRangeTransitionRequest, params(("card_range_id"=Uuid, Path), ("Idempotency-Key"=String, Header)), responses((status=202, body=CardRangeMutationResponse), (status=409, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
+pub async fn activate_card_range(
+    State(state): State<Arc<AppState>>,
+    Path(card_range_id): Path<Uuid>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let (context, request) = mutation_request::<CardRangeTransitionRequest>(
+        &state,
+        &method,
+        uri.path(),
+        &headers,
+        &body,
+        ACTIVATE_CARD_RANGE_OPERATION,
+    )?;
+    mutation_response(
+        CardRangeService::new(state.db.clone())
+            .mutate_card_range(
+                &context,
+                card_range_id,
+                CardRangeMutation::Activate {
+                    reason: request.reason,
+                },
+            )
+            .await?,
+        StatusCode::ACCEPTED,
+    )
+}
+
+#[utoipa::path(post, path="/api/v1/card-ranges/{card_range_id}/suspend", tag="Card Ranges", request_body=CardRangeTransitionRequest, params(("card_range_id"=Uuid, Path), ("Idempotency-Key"=String, Header)), responses((status=202, body=CardRangeMutationResponse), (status=409, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
+pub async fn suspend_card_range(
+    State(state): State<Arc<AppState>>,
+    Path(card_range_id): Path<Uuid>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let (context, request) = mutation_request::<CardRangeTransitionRequest>(
+        &state,
+        &method,
+        uri.path(),
+        &headers,
+        &body,
+        SUSPEND_CARD_RANGE_OPERATION,
+    )?;
+    mutation_response(
+        CardRangeService::new(state.db.clone())
+            .mutate_card_range(
+                &context,
+                card_range_id,
+                CardRangeMutation::Suspend {
+                    reason: request.reason,
+                },
+            )
+            .await?,
+        StatusCode::ACCEPTED,
+    )
+}
+
+#[utoipa::path(put, path="/api/v1/card-ranges/{card_range_id}/operational-controls", tag="Card Ranges", request_body=UpdateCardRangeControlsRequest, params(("card_range_id"=Uuid, Path), ("Idempotency-Key"=String, Header)), responses((status=202, body=CardRangeMutationResponse), (status=409, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
+pub async fn update_card_range_controls(
+    State(state): State<Arc<AppState>>,
+    Path(card_range_id): Path<Uuid>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let (context, request) = mutation_request::<UpdateCardRangeControlsRequest>(
+        &state,
+        &method,
+        uri.path(),
+        &headers,
+        &body,
+        UPDATE_CARD_RANGE_CONTROLS_OPERATION,
+    )?;
+    let change = CardRangeControlChange {
+        issuance_enabled: request.issuance_enabled,
+        cms_operation_mode: request.cms_operation_mode.into(),
+        reason: request.reason,
+    };
+    mutation_response(
+        CardRangeService::new(state.db.clone())
+            .mutate_card_range(
+                &context,
+                card_range_id,
+                CardRangeMutation::UpdateControls(change),
+            )
+            .await?,
+        StatusCode::ACCEPTED,
+    )
+}
+
+#[utoipa::path(get, path="/api/v1/card-ranges/{card_range_id}/providers", tag="Card Ranges", params(("card_range_id"=Uuid, Path)), responses((status=200, body=ListCardRangeProvidersResponse), (status=404, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
+pub async fn list_card_range_providers(
+    State(state): State<Arc<AppState>>,
+    Path(card_range_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request, &state.config.wso2)?;
+    let items = CardRangeService::new(state.db.clone())
+        .list_provider_eligibility(&actor, card_range_id)
+        .await?
+        .into_iter()
+        .map(|item| CardRangeProviderEligibilityResponse {
+            provider_id: item.provider_id,
+            status: item.status.as_db_value().to_string(),
+        })
+        .collect();
+    Ok(success_response(
+        StatusCode::OK,
+        ListCardRangeProvidersResponse { items },
+    ))
+}
+
+#[utoipa::path(get, path="/api/v1/operations/{operation_id}", tag="Operations", params(("operation_id"=Uuid, Path)), responses((status=200, body=IntegrationOperationResponse), (status=404, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
+pub async fn get_integration_operation(
+    State(state): State<Arc<AppState>>,
+    Path(operation_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request, &state.config.wso2)?;
+    let operation = CardRangeService::new(state.db.clone())
+        .get_operation(&actor, operation_id)
+        .await?;
+    let status = match operation.status {
+        crate::db::oracle::IntegrationOperationStatus::Pending => "PENDING",
+        crate::db::oracle::IntegrationOperationStatus::Publishing => "PUBLISHING",
+        crate::db::oracle::IntegrationOperationStatus::Published => "PUBLISHED",
+        crate::db::oracle::IntegrationOperationStatus::Materialized => "MATERIALIZED",
+        crate::db::oracle::IntegrationOperationStatus::DeadLetter => "DEAD_LETTER",
+    };
+    Ok(success_response(
+        StatusCode::OK,
+        IntegrationOperationResponse {
+            operation_id: operation.operation_id,
+            event_id: operation.event_id,
+            event_type: operation.event_type,
+            aggregate_type: operation.aggregate_type,
+            aggregate_id: operation.aggregate_id,
+            status: status.to_string(),
+            attempt_count: operation.attempt_count,
+            created_at: operation.created_at,
+            published_at: operation.published_at,
+            materialized_at: operation.materialized_at,
+        },
+    ))
+}
+
+fn mutation_request<T: for<'de> Deserialize<'de>>(
+    state: &AppState,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    operation_type: &str,
+) -> Result<(MutationCommandContext, T), ApiError> {
+    let request_context =
+        extract_trusted_request_context(headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let idempotency_key = require_idempotency_key(headers)?;
+    let request = serde_json::from_slice(body)
+        .map_err(|_| ApiError::new(WurzburgResultCode::InvalidCardRangeBoundary))?;
+    Ok((
+        MutationCommandContext {
+            operation_type: operation_type.to_string(),
+            actor,
+            request: request_context,
+            idempotency_key,
+            request_hash: canonical_request_hash(method, path, body),
+        },
+        request,
+    ))
+}
+
+fn mutation_response(
+    outcome: CardRangeMutationServiceOutcome,
+    status: StatusCode,
+) -> Result<Response, ApiError> {
+    match outcome {
+        CardRangeMutationServiceOutcome::Applied(result) => Ok(success_response(
+            status,
+            CardRangeMutationResponse {
+                operation_id: result.operation_id,
+                card_range: result.card_range.into(),
+            },
+        )),
+        CardRangeMutationServiceOutcome::Replayed(snapshot) => {
             Ok(success_response(StatusCode::OK, snapshot))
         }
     }
@@ -365,6 +678,8 @@ impl From<crate::domain::card_range::CardRange> for CardRangeResponse {
             issuance_enabled: card_range.issuance_enabled,
             cms_operation_mode: card_range.cms_operation_mode.into(),
             operational_version: card_range.operational_version,
+            materialized_operational_version: card_range.materialized_operational_version,
+            range_control_operation_id: card_range.range_control_operation_id,
             metadata: card_range.metadata_json,
             created_at: card_range.created_at,
             updated_at: card_range.updated_at,

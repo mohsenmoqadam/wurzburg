@@ -19,7 +19,27 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/card-ranges/{card_range_id}",
-            get(card_ranges::get_card_range),
+            get(card_ranges::get_card_range).patch(card_ranges::update_draft_card_range),
+        )
+        .route(
+            "/card-ranges/{card_range_id}/activate",
+            post(card_ranges::activate_card_range),
+        )
+        .route(
+            "/card-ranges/{card_range_id}/suspend",
+            post(card_ranges::suspend_card_range),
+        )
+        .route(
+            "/card-ranges/{card_range_id}/operational-controls",
+            axum::routing::put(card_ranges::update_card_range_controls),
+        )
+        .route(
+            "/card-ranges/{card_range_id}/providers",
+            get(card_ranges::list_card_range_providers),
+        )
+        .route(
+            "/operations/{operation_id}",
+            get(card_ranges::get_integration_operation),
         )
         .route(
             "/card-ranges/{card_range_id}/policy",

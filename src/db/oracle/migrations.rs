@@ -35,6 +35,7 @@ impl OracleMigrator {
                     "card_range_providers",
                     "card_ranges",
                     "providers",
+                    "kafka_poison_messages",
                     "integration_inbox",
                     "integration_outbox",
                     "operation_wal",
@@ -301,6 +302,7 @@ mod tests {
 
         assert!(migration.sql.contains("CREATE TABLE idempotency_records"));
         assert!(migration.sql.contains("CREATE TABLE audit_logs"));
+        assert!(migration.sql.contains("CREATE TABLE kafka_poison_messages"));
         assert!(migration.sql.contains("request_id VARCHAR2(128) NOT NULL"));
         assert!(
             migration

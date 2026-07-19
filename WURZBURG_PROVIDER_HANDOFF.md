@@ -661,8 +661,8 @@ one Oracle transaction. There is no multi-profile schedule queue.
 
 ## 11. Kafka Provisioning
 
-Provider onboarding provisions Kafka resources asynchronously. The final design
-retains these low-level admin capabilities:
+Provider onboarding provisions Kafka resources asynchronously. The provisioning
+worker requires these broker-level capabilities:
 
 ```text
 create_provider_topic(topic_name)
@@ -673,27 +673,25 @@ grant_consumer_acls(topic_name, consumer_group, username)
 revoke_consumer_acls(topic_name, consumer_group, username)
 ```
 
-Command behavior:
+Adapter behavior:
 
-- `create_provider_topic` executes `kafka-topics.sh --create` with configured
-  partitions and replication factor. `TopicExistsException` is treated as
-  idempotent success.
-- `delete_provider_topic` executes `kafka-topics.sh --delete`.
-  `UnknownTopicOrPartitionException` is treated as idempotent success.
-- `create_scram_user` executes `kafka-configs.sh --alter --add-config
-  SCRAM-SHA-512=[password=...] --entity-type users --entity-name ...`.
-- `delete_scram_user` executes `kafka-configs.sh --alter --delete-config
-  SCRAM-SHA-512 --entity-type users --entity-name ...`.
+- Topic creation/deletion uses the native Kafka Admin API. Existing-topic and
+  missing-topic broker results are idempotent success respectively.
+- The Rust Kafka client used by Wurzburg does not expose SCRAM-user mutation or
+  ACL administration. Those operations must use a dedicated, authenticated
+  provisioning adapter or cluster-management service with a versioned contract;
+  Wurzburg must not execute local Kafka shell scripts.
+- SCRAM and ACL provisioning remains part of the durable asynchronous provider
+  job. A successful topic creation alone does not complete Kafka provisioning.
 - `grant_consumer_acls` grants `Read` and `Describe` on the provider topic and
   `Read` only on that provider's consumer-group prefix. It must not grant access
   to all consumer groups.
 - `revoke_consumer_acls` removes the corresponding topic and consumer-group
   permissions during suspension or credential replacement.
 
-Because these shell commands block, they must stay inside `spawn_blocking` when
-called from async code. A Kafka admin failure must be persisted on the
-provisioning job and must never be converted into a successful provider
-activation.
+Every administration call has a deadline, safe diagnostic mapping, tracing, and
+idempotent replay behavior. A Kafka admin failure must be persisted on the
+provisioning job and must never be converted into successful Kafka provisioning.
 
 ### Provisioning Design
 

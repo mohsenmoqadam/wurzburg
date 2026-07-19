@@ -158,6 +158,20 @@ CREATE TABLE integration_inbox (
     )
 );
 
+CREATE TABLE kafka_poison_messages (
+    kafka_poison_message_id RAW(16) PRIMARY KEY,
+    topic_name VARCHAR2(255) NOT NULL,
+    partition_id NUMBER(10,0) NOT NULL,
+    message_offset NUMBER(19,0) NOT NULL,
+    payload_sha256 VARCHAR2(64),
+    error_code VARCHAR2(100) NOT NULL,
+    status VARCHAR2(32) DEFAULT 'DEAD_LETTER' NOT NULL,
+    received_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT uq_kafka_poison_position
+        UNIQUE (topic_name, partition_id, message_offset),
+    CONSTRAINT ck_kafka_poison_status CHECK (status = 'DEAD_LETTER')
+);
+
 CREATE TABLE runtime_materialization_receipts (
     runtime_materialization_receipt_id RAW(16) PRIMARY KEY,
     receipt_event_id RAW(16) NOT NULL UNIQUE,
@@ -181,3 +195,4 @@ CREATE INDEX idx_idempotency_resource ON idempotency_records(resource_type, reso
 CREATE INDEX idx_operation_wal_lease ON operation_wal(status, next_attempt_at, locked_until);
 CREATE INDEX idx_outbox_lease ON integration_outbox(status, next_attempt_at, locked_until);
 CREATE INDEX idx_inbox_aggregate ON integration_inbox(aggregate_type, aggregate_id);
+CREATE INDEX idx_kafka_poison_received ON kafka_poison_messages(received_at);

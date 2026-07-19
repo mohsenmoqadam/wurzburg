@@ -28,7 +28,7 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateCardRangePersistenceOutcome {
-    Created(CardRange),
+    Created(Box<CardRange>),
     Replayed(serde_json::Value),
     IdempotencyConflict,
     IdempotencyInProgress,
@@ -114,7 +114,9 @@ impl OracleRepository {
                     )
                 })?;
 
-                Ok(CreateCardRangePersistenceOutcome::Created(created))
+                Ok(CreateCardRangePersistenceOutcome::Created(Box::new(
+                    created,
+                )))
             })
             .await;
 
@@ -213,6 +215,22 @@ impl OracleRepository {
                 Ok(CardRangeListPage { items, next_cursor })
             })
             .await
+    }
+
+    #[tracing::instrument(skip(self), fields(db.system="oracle", db.operation.name="card_range_providers.list", card_range_id=%card_range_id))]
+    pub async fn list_card_range_providers(
+        &self,
+        card_range_id: Uuid,
+    ) -> DbResult<Vec<crate::domain::card_range::CardRangeProviderEligibility>> {
+        self.pool.with_connection(move |connection| {
+            let rows = connection.query("SELECT provider_id,status FROM card_range_providers WHERE card_range_id=:1 ORDER BY created_at,provider_id", &[&uuid_to_raw16(card_range_id).to_vec()]).map_err(|error| DbError::Query(format!("failed to list range providers: {error}")))?;
+            rows.map(|row| {
+                let row = row.map_err(|error| DbError::Query(format!("failed to read range provider: {error}")))?;
+                let raw: Vec<u8> = row.get(0).map_err(read_error)?;
+                let status: String = row.get(1).map_err(read_error)?;
+                Ok(crate::domain::card_range::CardRangeProviderEligibility { card_range_id, provider_id: raw16_to_uuid(&raw)?, status: crate::domain::card_range::CardRangeProviderStatus::from_db_value(&status).ok_or_else(|| DbError::Query("unknown range provider status".to_string()))? })
+            }).collect()
+        }).await
     }
 }
 
@@ -352,6 +370,8 @@ pub(crate) fn card_range_select_sql() -> &'static str {
         issuance_enabled,
         cms_operation_mode,
         operational_version,
+        materialized_operational_version,
+        range_control_operation_id,
         JSON_SERIALIZE(metadata_json RETURNING CLOB) AS metadata_json,
         created_by_subject,
         updated_by_subject,
@@ -375,6 +395,8 @@ pub(crate) fn card_range_list_sql() -> &'static str {
         issuance_enabled,
         cms_operation_mode,
         operational_version,
+        materialized_operational_version,
+        range_control_operation_id,
         JSON_SERIALIZE(metadata_json RETURNING CLOB) AS metadata_json,
         created_by_subject,
         updated_by_subject,
@@ -397,7 +419,10 @@ pub(crate) fn card_range_list_sql() -> &'static str {
     "#
 }
 
-fn fetch_card_range(connection: &oracle::Connection, card_range_id: Uuid) -> DbResult<CardRange> {
+pub(crate) fn fetch_card_range(
+    connection: &oracle::Connection,
+    card_range_id: Uuid,
+) -> DbResult<CardRange> {
     let card_range_id = uuid_to_raw16(card_range_id).to_vec();
     let row = connection
         .query_row(card_range_select_sql(), &[&card_range_id])
@@ -406,16 +431,17 @@ fn fetch_card_range(connection: &oracle::Connection, card_range_id: Uuid) -> DbR
     map_card_range_row(&row)
 }
 
-fn map_card_range_row(row: &Row) -> DbResult<CardRange> {
+pub(crate) fn map_card_range_row(row: &Row) -> DbResult<CardRange> {
     let card_range_id: Vec<u8> = row.get(0).map_err(read_error)?;
     let funding_mode: String = row.get(3).map_err(read_error)?;
     let authority: String = row.get(4).map_err(read_error)?;
     let limit_calendar_json: Option<String> = row.get(5).map_err(read_error)?;
     let status: String = row.get(6).map_err(read_error)?;
     let cms_operation_mode: String = row.get(8).map_err(read_error)?;
-    let metadata_json: String = row.get(10).map_err(read_error)?;
-    let created_at: String = row.get(13).map_err(read_error)?;
-    let updated_at: String = row.get(14).map_err(read_error)?;
+    let range_control_operation_id: Option<Vec<u8>> = row.get(11).map_err(read_error)?;
+    let metadata_json: String = row.get(12).map_err(read_error)?;
+    let created_at: String = row.get(15).map_err(read_error)?;
+    let updated_at: String = row.get(16).map_err(read_error)?;
 
     Ok(CardRange {
         card_range_id: raw16_to_uuid(&card_range_id)?,
@@ -438,13 +464,18 @@ fn map_card_range_row(row: &Row) -> DbResult<CardRange> {
             || DbError::Query(format!("unknown CMS operation mode `{cms_operation_mode}`")),
         )?,
         operational_version: row.get(9).map_err(read_error)?,
+        materialized_operational_version: row.get(10).map_err(read_error)?,
+        range_control_operation_id: range_control_operation_id
+            .as_deref()
+            .map(raw16_to_uuid)
+            .transpose()?,
         metadata_json: serde_json::from_str(&metadata_json).map_err(|error| {
             DbError::Query(format!(
                 "invalid card range metadata JSON in Oracle row: {error}"
             ))
         })?,
-        created_by_subject: row.get(11).map_err(read_error)?,
-        updated_by_subject: row.get(12).map_err(read_error)?,
+        created_by_subject: row.get(13).map_err(read_error)?,
+        updated_by_subject: row.get(14).map_err(read_error)?,
         created_at: parse_utc(&created_at)?,
         updated_at: parse_utc(&updated_at)?,
     })

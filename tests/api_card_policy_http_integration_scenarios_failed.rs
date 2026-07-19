@@ -40,6 +40,31 @@ async fn rejects_unsafe_policy_scenarios_through_running_wurzburg_and_oracle() {
     let client = reqwest::Client::new();
 
     let card_range_id = create_range(&client, address, "PLATFORM").await;
+    // Activation fails closed until both an ACTIVE/materialized policy and the
+    // required provider eligibility exist. No CRCTL operation is created.
+    let activation = client
+        .post(format!(
+            "http://{address}/api/v1/card-ranges/{card_range_id}/activate"
+        ))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("Idempotency-Key", Uuid::new_v4().to_string())
+        .header("X-Correlation-Id", "range-activation-prerequisites")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.10")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({"reason":"premature activation"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(activation.status(), reqwest::StatusCode::CONFLICT);
+    assert!(
+        activation
+            .text()
+            .await
+            .unwrap()
+            .contains("CARD_RANGE_PREREQUISITES_MISSING")
+    );
     let invalid_bounds = serde_json::json!({
         "reason": "invalid transaction bounds",
         "withdrawal_limits": {

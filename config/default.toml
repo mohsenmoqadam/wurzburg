@@ -51,45 +51,47 @@ pool_max_open = 10
 connection_timeout_ms = 3000
 response_timeout_ms = 2000
 
-[kafka.producer]
-bootstrap_servers = "localhost:9093" 
-client_id = "wurzburg-producer"
-message_timeout_ms = 5000
-max_request_size = 1048576 # 1MB
-retries = 3
+[kafka]
+bootstrap_servers = "localhost:9093"
 security_protocol = "SASL_SSL"
 security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/ca-certificate.pem"
 sasl_mechanism = "SCRAM-SHA-512"
 sasl_username = "producer_user"
 sasl_password = "producer_password"
 
-[kafka.nuremberg.producer]
-bootstrap_servers = "localhost:9093" 
-client_id = "nuremberg-producer"
-message_timeout_ms = 5000
+[kafka.producer]
+client_id = "wurzburg-producer"
+delivery_timeout_ms = 30000
+request_timeout_ms = 10000
 max_request_size = 1048576 # 1MB
-retries = 3
-security_protocol = "SASL_SSL"
-security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/ca-certificate.pem"
-sasl_mechanism = "SCRAM-SHA-512"
-sasl_username = "nuremberg_producer_user"
-sasl_password = "nuremberg_producer_password"
-topic_name = "nuremberg.events"
+retries = 2147483647
+linger_ms = 5
+compression_type = "lz4"
+
+[kafka.outbox_relay]
+enabled = true
+topic = "wurzburg.runtime-projection.commands.v1"
+worker_id = "wurzburg-outbox-relay"
+batch_size = 50
+poll_interval_ms = 250
+lease_duration_ms = 45000
+max_attempts = 20
+initial_backoff_ms = 500
+max_backoff_ms = 60000
+
+[kafka.materialization_receipts]
+enabled = true
+topic = "wolfsburg.runtime-projection.receipts.v1"
+group_id = "wurzburg-runtime-receipts-v1"
+client_id = "wurzburg-receipt-consumer"
+session_timeout_ms = 45000
+max_poll_interval_ms = 300000
+auto_offset_reset = "earliest"
 
 [kafka.admin]
-bootstrap_servers = "localhost:9092" 
 request_timeout_ms = 5000
-kafka_bin_dir = "/home/mohsen/Codes/war/wurzburg/infra/kafka_2.12-3.9.2/bin/"
 partitions = 1
 replication_factor = 1
-
-[kafka.consumer_defaults]
-bootstrap_servers = "localhost:9093"
-session_timeout_ms = 45000
-auto_offset_reset = "earliest"
-security_protocol = "SASL_SSL"
-security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/ca-certificate.pem"
-sasl_mechanism = "SCRAM-SHA-512"
 
 [tigerbeetle]
 cluster_id = 0

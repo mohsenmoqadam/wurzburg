@@ -29,6 +29,8 @@ CREATE TABLE card_ranges (
     issuance_enabled NUMBER(1) DEFAULT 1 NOT NULL,
     cms_operation_mode VARCHAR2(32) DEFAULT 'FULL' NOT NULL,
     operational_version NUMBER(19,0) DEFAULT 1 NOT NULL,
+    materialized_operational_version NUMBER(19,0) DEFAULT 0 NOT NULL,
+    range_control_operation_id RAW(16),
     metadata_json JSON DEFAULT '{}' NOT NULL,
     created_by_subject VARCHAR2(255) NOT NULL,
     updated_by_subject VARCHAR2(255) NOT NULL,
@@ -52,6 +54,13 @@ CREATE TABLE card_ranges (
     CONSTRAINT ck_card_ranges_issuance CHECK (
         issuance_enabled IN (0, 1)
     ),
+    CONSTRAINT ck_card_ranges_control_versions CHECK (
+        materialized_operational_version <= operational_version
+    ),
+    CONSTRAINT fk_card_ranges_control_operation
+        FOREIGN KEY (range_control_operation_id)
+        REFERENCES integration_outbox(operation_id)
+        DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT ck_card_ranges_authority_calendar CHECK (
         (withdrawal_limit_authority = 'PLATFORM' AND limit_calendar_json IS JSON)
         OR (withdrawal_limit_authority = 'CMS' AND limit_calendar_json IS NULL)
@@ -120,7 +129,8 @@ CREATE TABLE card_policy_profiles (
         REFERENCES card_policy_profiles(card_policy_profile_id),
     CONSTRAINT fk_cpp_publication_operation
         FOREIGN KEY (publication_operation_id)
-        REFERENCES integration_outbox(operation_id),
+        REFERENCES integration_outbox(operation_id)
+        DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT ck_cpp_status CHECK (
         status IN ('DRAFT', 'ACTIVE', 'SUPERSEDED')
     ),

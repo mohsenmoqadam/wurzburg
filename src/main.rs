@@ -6,6 +6,7 @@ use wurzburg::{
     api::{router::build_app_router, swagger::swagger_router},
     config::Settings,
     db::oracle::prepare_oracle_schema,
+    kafka::{outbox_relay::start_outbox_relay, receipt_consumer::start_receipt_consumer},
     state::AppState,
     telemetry,
 };
@@ -24,6 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Init state (DB, Redis)
     let app_state = Arc::new(AppState::new(settings.clone()).await?);
+    let outbox_relay = start_outbox_relay(
+        app_state.db.clone(),
+        app_state.kafka_producer.clone(),
+        settings.kafka.outbox_relay.clone(),
+    );
+    let receipt_consumer = start_receipt_consumer(app_state.db.clone(), settings.kafka.clone())?;
 
     // 5. Build main API router
     let app = build_app_router(app_state.clone());
@@ -52,9 +59,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 8. Run main server with graceful shutdown
-    axum::serve(main_listener, app)
+    let server_result = axum::serve(main_listener, app)
         .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .await;
+
+    if let Some(outbox_relay) = outbox_relay {
+        outbox_relay.shutdown().await;
+    }
+    if let Some(receipt_consumer) = receipt_consumer {
+        receipt_consumer.shutdown().await;
+    }
+    server_result?;
 
     // 9. Shutdown telemetry after server stops
     telemetry::tracing::shutdown();

@@ -327,6 +327,28 @@ Delivery rules:
 - a missing acknowledgement is uncertain; republishing the same event ID is
   safe and expected
 
+Internal runtime-projection topics:
+
+```text
+wurzburg.runtime-projection.commands.v1
+wolfsburg.runtime-projection.receipts.v1
+```
+
+The Wurzburg producer uses idempotent broker delivery, `acks=all`, bounded
+in-flight requests, explicit request/delivery deadlines, and an Oracle outbox
+lease longer than the delivery deadline. Producer retries preserve the same
+event ID. Kafka headers carry event, operation, correlation/request, and W3C
+trace context; the business envelope does not embed tracing fields.
+
+Receipt consumers disable auto-commit and commit an offset only after Oracle
+inbox/business processing succeeds. Contract-invalid records are durably
+recorded by topic/partition/offset, payload hash, and safe error code before the
+offset advances. Oracle failures leave the offset uncommitted for retry.
+
+Production deployment must pre-create both internal topics and grant Wurzburg
+write access to the command topic and read/group access to the receipt topic.
+The ordinary producer identity does not receive topic-admin privileges.
+
 Provider-facing events use separate provider topics and the public envelope in
 `WURZBURG_PROVIDER_HANDOFF.md`. Wurzburg is the controlled publisher. Wurzburg
 and Wolfsburg may produce public event facts into the shared provider outbox.
@@ -580,8 +602,9 @@ Graceful shutdown:
 
 - No SQL in handlers or domain models.
 - No financial balance columns in Oracle.
-- No blocking shell/driver work on async executor threads; isolate blocking
-  Kafka administration or driver calls appropriately.
+- Do not execute infrastructure shell commands from the service. Use typed,
+  authenticated dependency adapters; isolate any unavoidable blocking driver
+  work from async executor threads.
 - External calls have explicit deadlines; retries occur only where idempotency
   and deterministic identities make them safe.
 - Oracle transactions are short and never held open while waiting for network

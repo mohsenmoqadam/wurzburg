@@ -43,8 +43,8 @@ impl AppState {
             .context("Failed to create Redis pool")?;
 
         // 3. Setup Kafka Clients
-        let kafka_producer = AppKafkaProducer::new(&config)?;
-        let kafka_admin = AppKafkaAdmin::new(&config)?;
+        let kafka_producer = AppKafkaProducer::new(&config.kafka)?;
+        let kafka_admin = AppKafkaAdmin::new(&config.kafka)?;
 
         // 4. Setup TigerBeetle Client & Background Worker
         let (tb_client, tb_receiver) = AppTbClient::new(&config)?;

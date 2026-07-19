@@ -35,45 +35,18 @@ pool_max_open = 64
 connection_timeout_ms = 3000
 response_timeout_ms = 2000
 
-[kafka.producer]
-bootstrap_servers = "kafka.arshamnovin.ir:9093" 
-client_id = "wurzburg-producer"
-message_timeout_ms = 5000
-max_request_size = 1048576 # 1MB
-retries = 3
+[kafka]
+bootstrap_servers = "kafka.arshamnovin.ir:9093"
 security_protocol = "SASL_SSL"
 security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/kafka.arshamnovin.ir.crt"
 sasl_mechanism = "SCRAM-SHA-512"
 sasl_username = "producer_user"
 sasl_password = "producer_password"
 
-[kafka.nuremberg.producer]
-bootstrap_servers = "localhost:9093" 
-client_id = "nuremberg-producer"
-message_timeout_ms = 5000
-max_request_size = 1048576 # 1MB
-retries = 3
-security_protocol = "SASL_SSL"
-security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/ca-certificate.pem"
-sasl_mechanism = "SCRAM-SHA-512"
-sasl_username = "nuremberg_producer_user"
-sasl_password = "nuremberg_producer_password"
-topic_name = "nuremberg.events"
-
 [kafka.admin]
-bootstrap_servers = "localhost:9092"
 request_timeout_ms = 5000 
-kafka_bin_dir = "/home/mohsen/Codes/war/wurzburg/infra/kafka_2.12-3.9.2/bin/"
 partitions = 1
 replication_factor = 1
-
-[kafka.consumer_defaults]
-bootstrap_servers = "kafka.arshamnovin.ir:9093"
-session_timeout_ms = 45000
-auto_offset_reset = "earliest"
-security_protocol = "SASL_SSL"
-security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/kafka.arshamnovin.ir.crt"
-sasl_mechanism = "SCRAM-SHA-512"
 
 [tigerbeetle]
 cluster_id = 0

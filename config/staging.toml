@@ -36,22 +36,24 @@ connection_timeout_ms = 1500
 response_timeout_ms = 1000
 
 [kafka]
-brokers = "localhost:9092"
-
-[kafka.producer]
-client_id = "wurzburg-producer"
-message_timeout_ms = 5000
-max_request_size = 1048576 # 1MB
-retries = 3
+bootstrap_servers = "localhost:9092"
 security_protocol = "SASL_PLAINTEXT"
+security_cert = ""
 sasl_mechanism = "SCRAM-SHA-512"
 sasl_username = "producer_user"
 sasl_password = "producer_password"
 
+[kafka.producer]
+client_id = "wurzburg-producer"
+delivery_timeout_ms = 30000
+request_timeout_ms = 10000
+max_request_size = 1048576 # 1MB
+retries = 2147483647
+linger_ms = 5
+compression_type = "lz4"
+
 [kafka.admin]
 request_timeout_ms = 5000
-bootstrap_servers = "localhost:9092" 
-kafka_bin_dir = "/home/mohsen/Codes/war/wurzburg/infra/kafka_2.12-3.9.2/bin/"
 partitions = 1
 replication_factor = 1
 

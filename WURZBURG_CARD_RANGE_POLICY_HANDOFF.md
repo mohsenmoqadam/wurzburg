@@ -138,6 +138,8 @@ status string: DRAFT | ACTIVE | SUSPENDED
 issuance_enabled NUMBER(1) default 1
 cms_operation_mode string: FULL | BALANCE_ONLY | BLOCKED
 operational_version number
+materialized_operational_version number
+range_control_operation_id RAW(16) nullable
 metadata_json JSON
 created_by_subject string
 updated_by_subject string
@@ -179,6 +181,10 @@ Rules:
   CMS operation regardless of the two stored operational controls.
 - Every operational-control change increments `operational_version`, requires a
   reason, and writes an immutable audit snapshot.
+- `range_control_operation_id` identifies the one CRCTL command awaiting a
+  Wolfsburg receipt. A new runtime mutation is rejected while it is non-null.
+- A valid matching receipt atomically advances
+  `materialized_operational_version` and clears the pending operation.
 
 Recommended lookup indexes:
 
@@ -609,6 +615,7 @@ PATCH  /api/v1/card-ranges/{card_range_id}
 POST   /api/v1/card-ranges/{card_range_id}/activate
 POST   /api/v1/card-ranges/{card_range_id}/suspend
 PUT    /api/v1/card-ranges/{card_range_id}/operational-controls
+GET    /api/v1/operations/{operation_id}
 ```
 
 Create request contains the immutable range structure and initial operational
@@ -642,6 +649,18 @@ Operational-control request:
   "reason": "temporary risk control"
 }
 ```
+
+Draft `PATCH` supplies the complete desired draft representation plus a reason.
+This avoids ambiguous missing-versus-null semantics for `limit_calendar`.
+Structural replacement is accepted only while status is `DRAFT`; after first
+activation, boundaries, funding mode, authority, and calendar are immutable.
+
+Activation, suspension, and operational-control changes return `202 Accepted`
+with `operation_id`, the new `operational_version`, and the current
+`materialized_operational_version`. Only one CRCTL operation may be pending for
+a range. `GET /api/v1/operations/{operation_id}` reports `PENDING`,
+`PUBLISHING`, `PUBLISHED`, `MATERIALIZED`, or `DEAD_LETTER` without exposing
+event payloads or Kafka headers.
 
 ### Range Providers
 
@@ -832,11 +851,13 @@ card_range_providers
 card_policy_profiles
 runtime_materialization_receipts
 integration_outbox shared with Provider slice
+integration_inbox
+kafka_poison_messages
 idempotency_records if not already present
 ```
 
 The existing migrations are development drafts, not a compatibility boundary.
-Rewrite `V002__card_ranges_and_policies.sql` as one clean final DDL migration
+Maintain `V002__card_foundation.sql` as one clean final DDL migration
 that creates the final columns, allocation-lock row/table, constraints,
 function-based indexes, foreign keys, JSON checks, and audit/outbox relationships
 directly. Remove the draft additive `V003__oracle_hardening.sql`; fold every

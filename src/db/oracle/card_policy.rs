@@ -1,8 +1,6 @@
 use chrono::{DateTime, Utc};
-use opentelemetry::trace::TraceContextExt;
 use oracle::Row;
 use serde::Serialize;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
@@ -27,6 +25,7 @@ use crate::{
         card_range::{FundingMode, WithdrawalLimitAuthority},
         idempotency::IdempotencyStatus,
     },
+    kafka::contract::{InternalEventEnvelope, InternalEventHeaders},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -92,7 +91,10 @@ impl OracleRepository {
         let retry_idempotency_key = idempotency_key.clone();
         let retry_request_hash = request_hash.clone();
         let pool = self.pool.clone();
-        let event_headers = internal_event_headers(&command_context);
+        let event_headers = InternalEventHeaders::from_current_span(
+            command_context.request.correlation_id.clone(),
+            command_context.request.request_id.to_string(),
+        );
 
         let result = self
             .pool
@@ -821,20 +823,16 @@ fn insert_policy_outbox(
     authority: WithdrawalLimitAuthority,
     limit_calendar: Option<&serde_json::Value>,
     terms: &CardPolicyTerms,
-    headers: &serde_json::Value,
+    headers: &InternalEventHeaders,
 ) -> DbResult<()> {
     let event_id = Uuid::new_v4();
-    let payload = serde_json::json!({
-        "event_id": event_id,
-        "event_type": "CARD_POLICY_PROFILE_PUBLISH_REQUESTED",
-        "schema_version": 1,
-        "aggregate_type": "CARD_RANGE",
-        "aggregate_id": card_range_id,
-        "partition_key": card_range_id,
-        "operation_id": operation_id,
-        "occurred_at": Utc::now(),
-        "producer": "wurzburg",
-        "payload": {
+    let envelope = InternalEventEnvelope::new(
+        event_id,
+        "CARD_POLICY_PROFILE_PUBLISH_REQUESTED",
+        "CARD_RANGE",
+        card_range_id,
+        operation_id,
+        serde_json::json!({
             "card_range_id": card_range_id,
             "card_policy_profile_id": policy_id,
             "policy_version": version,
@@ -842,10 +840,12 @@ fn insert_policy_outbox(
             "withdrawal_limit_authority": authority.as_db_value(),
             "withdrawal_limits": terms.withdrawal_limits,
             "calendar": limit_calendar,
-        }
-    })
-    .to_string();
-    let headers = headers.to_string();
+        }),
+    );
+    let payload = serde_json::to_string(&envelope)
+        .map_err(|error| DbError::Query(format!("failed to serialize policy event: {error}")))?;
+    let headers = serde_json::to_string(headers)
+        .map_err(|error| DbError::Query(format!("failed to serialize policy headers: {error}")))?;
     let partition_key = card_range_id.to_string();
 
     connection
@@ -866,26 +866,6 @@ fn insert_policy_outbox(
             DbError::Query(format!("failed to insert policy outbox event: {error}"))
         })?;
     Ok(())
-}
-
-fn internal_event_headers(context: &MutationCommandContext) -> serde_json::Value {
-    let otel_context = tracing::Span::current().context();
-    let span = otel_context.span();
-    let span_context = span.span_context();
-    let traceparent = span_context.is_valid().then(|| {
-        format!(
-            "00-{}-{}-{:02x}",
-            span_context.trace_id(),
-            span_context.span_id(),
-            span_context.trace_flags().to_u8()
-        )
-    });
-
-    serde_json::json!({
-        "correlation_id": context.request.correlation_id,
-        "request_id": context.request.request_id,
-        "traceparent": traceparent,
-    })
 }
 
 fn fetch_policy_by_status(

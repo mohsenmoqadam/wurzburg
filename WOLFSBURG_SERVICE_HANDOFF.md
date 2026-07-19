@@ -75,7 +75,6 @@ All Wurzburg-to-Wolfsburg events use one versioned envelope:
   "schema_version": 1,
   "aggregate_type": "CARD_RANGE",
   "aggregate_id": "uuid",
-  "partition_key": "uuid-or-normalized-card-number",
   "operation_id": "uuid",
   "occurred_at": "2026-07-18T00:00:00Z",
   "producer": "wurzburg",
@@ -89,7 +88,9 @@ Kafka headers carry:
 event_id
 event_type
 schema_version
+operation_id
 correlation_id
+request_id
 causation_id optional
 traceparent
 tracestate allowlisted and optional
@@ -103,6 +104,19 @@ Event payloads must not contain raw PAN, national ID, contacts, credentials,
 JWTs, unrestricted metadata, SQL, or live financial balances. A normalized card
 number may be used only as the Kafka partition key where same-card ordering is
 required; logs and spans must use a masked or hashed representation.
+
+The Kafka record key is transport metadata and is not duplicated inside the
+envelope. Wurzburg publishes materialization commands to:
+
+```text
+wurzburg.runtime-projection.commands.v1
+```
+
+Wolfsburg publishes receipts to:
+
+```text
+wolfsburg.runtime-projection.receipts.v1
+```
 
 ## 4. Card Policy Materialization
 
@@ -246,6 +260,9 @@ For CPOL, a valid receipt causes one Wurzburg Oracle transaction to:
 - Consumer offset commit occurs only after durable processing.
 - Automatic retry uses bounded exponential backoff with jitter.
 - Poison events enter a durable dead-letter state with safe diagnostics.
+- A receipt that cannot be parsed is recorded by topic, partition, offset,
+  payload SHA-256, and safe error code. Its payload is never stored in the
+  transport dead-letter table.
 - Generic operator recovery may requeue dead letters; policy-specific retry and
   cancellation APIs do not exist.
 - A newer event never permits an older event to overwrite its runtime value.

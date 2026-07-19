@@ -99,63 +99,58 @@ pub struct TelemetryConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaConfig {
+    pub bootstrap_servers: String,
+    pub security_protocol: String,
+    pub security_cert: Option<String>,
+    pub sasl_mechanism: Option<String>,
+    pub sasl_username: Option<String>,
+    pub sasl_password: Option<String>,
     pub producer: KafkaProducerConfig,
+    pub outbox_relay: KafkaOutboxRelayConfig,
+    pub materialization_receipts: KafkaReceiptConsumerConfig,
     pub admin: KafkaAdminConfig,
-    pub consumer_defaults: KafkaConsumerDefaultsConfig,
-    pub nuremberg: NurembergConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaProducerConfig {
-    pub bootstrap_servers: String,
     pub client_id: String,
-    pub message_timeout_ms: u64,
+    pub delivery_timeout_ms: u64,
+    pub request_timeout_ms: u64,
     pub max_request_size: u64,
     pub retries: u32,
-    pub security_protocol: String,
-    pub security_cert: String,
-    pub sasl_mechanism: Option<String>,
-    pub sasl_username: Option<String>,
-    pub sasl_password: Option<String>,
+    pub linger_ms: u64,
+    pub compression_type: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KafkaOutboxRelayConfig {
+    pub enabled: bool,
+    pub topic: String,
+    pub worker_id: String,
+    pub batch_size: u16,
+    pub poll_interval_ms: u64,
+    pub lease_duration_ms: u64,
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KafkaReceiptConsumerConfig {
+    pub enabled: bool,
+    pub topic: String,
+    pub group_id: String,
+    pub client_id: String,
+    pub session_timeout_ms: u64,
+    pub max_poll_interval_ms: u64,
+    pub auto_offset_reset: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KafkaAdminConfig {
-    pub bootstrap_servers: String,
     pub request_timeout_ms: u64,
-    pub kafka_bin_dir: String,
     pub partitions: u32,
     pub replication_factor: u32,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct KafkaConsumerDefaultsConfig {
-    pub bootstrap_servers: String,
-    pub session_timeout_ms: u64,
-    pub auto_offset_reset: String,
-    pub security_protocol: String,
-    pub security_cert: String,
-    pub sasl_mechanism: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct NurembergProducerConfig {
-    pub bootstrap_servers: String,
-    pub client_id: String,
-    pub message_timeout_ms: u32,
-    pub max_request_size: u32,
-    pub retries: u32,
-    pub security_protocol: String,
-    pub security_cert: String,
-    pub sasl_mechanism: String,
-    pub sasl_username: Option<String>,
-    pub sasl_password: Option<String>,
-    pub topic_name: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct NurembergConfig {
-    pub producer: NurembergProducerConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -220,9 +215,11 @@ impl Settings {
             .build()
             .context("Failed to build configuration")?;
 
-        config
+        let settings: Self = config
             .try_deserialize()
-            .context("Failed to deserialize configuration")
+            .context("Failed to deserialize configuration")?;
+        settings.kafka.validate()?;
+        Ok(settings)
     }
 
     pub fn environment() -> String {
@@ -272,8 +269,92 @@ impl RedisConfig {
 
 // Kafka Duration Helpers
 impl KafkaProducerConfig {
-    pub fn message_timeout(&self) -> Duration {
-        Duration::from_millis(self.message_timeout_ms)
+    pub fn delivery_timeout(&self) -> Duration {
+        Duration::from_millis(self.delivery_timeout_ms)
+    }
+}
+
+impl KafkaConfig {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.bootstrap_servers.trim().is_empty(),
+            "Kafka bootstrap_servers must not be empty"
+        );
+        anyhow::ensure!(
+            matches!(
+                self.security_protocol.as_str(),
+                "PLAINTEXT" | "SSL" | "SASL_PLAINTEXT" | "SASL_SSL"
+            ),
+            "unsupported Kafka security_protocol"
+        );
+        if self.security_protocol.contains("SASL") {
+            anyhow::ensure!(
+                self.sasl_mechanism
+                    .as_deref()
+                    .is_some_and(|v| !v.is_empty()),
+                "Kafka SASL mechanism is required"
+            );
+            anyhow::ensure!(
+                self.sasl_username.as_deref().is_some_and(|v| !v.is_empty()),
+                "Kafka SASL username is required"
+            );
+            anyhow::ensure!(
+                self.sasl_password.as_deref().is_some_and(|v| !v.is_empty()),
+                "Kafka SASL password is required"
+            );
+        }
+        anyhow::ensure!(
+            self.producer.delivery_timeout_ms > self.producer.request_timeout_ms,
+            "Kafka delivery_timeout_ms must exceed request_timeout_ms"
+        );
+        anyhow::ensure!(
+            matches!(self.producer.compression_type.as_str(), "none" | "lz4"),
+            "unsupported Kafka compression_type; this build supports none and lz4"
+        );
+        if self.outbox_relay.enabled {
+            anyhow::ensure!(
+                !self.outbox_relay.topic.trim().is_empty(),
+                "Kafka outbox topic is required"
+            );
+            anyhow::ensure!(
+                !self.outbox_relay.worker_id.trim().is_empty(),
+                "Kafka outbox worker_id is required"
+            );
+            anyhow::ensure!(
+                self.outbox_relay.batch_size > 0,
+                "Kafka outbox batch_size must be positive"
+            );
+            anyhow::ensure!(
+                self.outbox_relay.lease_duration_ms > self.producer.delivery_timeout_ms,
+                "Kafka outbox lease must exceed producer delivery timeout"
+            );
+            anyhow::ensure!(
+                self.outbox_relay.max_attempts > 0,
+                "Kafka outbox max_attempts must be positive"
+            );
+            anyhow::ensure!(
+                self.outbox_relay.initial_backoff_ms <= self.outbox_relay.max_backoff_ms,
+                "Kafka outbox backoff bounds are invalid"
+            );
+        }
+        if self.materialization_receipts.enabled {
+            anyhow::ensure!(
+                !self.materialization_receipts.topic.trim().is_empty(),
+                "Kafka receipt topic is required"
+            );
+            anyhow::ensure!(
+                !self.materialization_receipts.group_id.trim().is_empty(),
+                "Kafka receipt group_id is required"
+            );
+            anyhow::ensure!(
+                matches!(
+                    self.materialization_receipts.auto_offset_reset.as_str(),
+                    "earliest" | "latest" | "error"
+                ),
+                "invalid Kafka auto_offset_reset"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -283,7 +364,7 @@ impl KafkaAdminConfig {
     }
 }
 
-impl KafkaConsumerDefaultsConfig {
+impl KafkaReceiptConsumerConfig {
     pub fn session_timeout(&self) -> Duration {
         Duration::from_millis(self.session_timeout_ms)
     }
@@ -341,5 +422,20 @@ mod tests {
         unsafe {
             env::remove_var("APP_MIGRATIONS__FORCE_RECREATE");
         }
+    }
+
+    #[test]
+    fn kafka_validation_rejects_compression_missing_from_this_build() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("APP_ENVIRONMENT", "test") };
+        let mut settings = Settings::new().expect("settings should load");
+        settings.kafka.producer.compression_type = "zstd".to_string();
+
+        let error = settings
+            .kafka
+            .validate()
+            .expect_err("zstd must not pass without the matching librdkafka build feature");
+
+        assert!(error.to_string().contains("supports none and lz4"));
     }
 }

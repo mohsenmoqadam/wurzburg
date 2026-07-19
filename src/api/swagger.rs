@@ -13,6 +13,12 @@ use super::handlers::{card_policies, card_ranges, system};
             card_ranges::create_card_range,
             card_ranges::get_card_range,
             card_ranges::list_card_ranges,
+            card_ranges::update_draft_card_range,
+            card_ranges::activate_card_range,
+            card_ranges::suspend_card_range,
+            card_ranges::update_card_range_controls,
+            card_ranges::list_card_range_providers,
+            card_ranges::get_integration_operation,
             card_policies::set_card_policy,
             card_policies::get_current_card_policy,
             card_policies::get_card_policy,
@@ -25,6 +31,13 @@ use super::handlers::{card_policies, card_ranges, system};
             card_ranges::CardRangeResponse,
             card_ranges::ListCardRangesQuery,
             card_ranges::ListCardRangesResponse,
+            card_ranges::UpdateDraftCardRangeRequest,
+            card_ranges::CardRangeTransitionRequest,
+            card_ranges::UpdateCardRangeControlsRequest,
+            card_ranges::CardRangeMutationResponse,
+            card_ranges::CardRangeProviderEligibilityResponse,
+            card_ranges::ListCardRangeProvidersResponse,
+            card_ranges::IntegrationOperationResponse,
             card_ranges::CardRangeFundingModeDto,
             card_ranges::CardRangeWithdrawalLimitAuthorityDto,
             card_ranges::CardRangeStatusDto,
@@ -50,6 +63,7 @@ use super::handlers::{card_policies, card_ranges, system};
     tags(
         (name = "Card Ranges", description = "Platform-admin card range control APIs"),
         (name = "Card Policies", description = "Platform-admin range policy APIs"),
+        (name = "Operations", description = "Durable integration operation status APIs"),
         (name = "System", description = "Operational health APIs")
     )
 )]

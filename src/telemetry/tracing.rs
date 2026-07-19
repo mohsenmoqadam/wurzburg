@@ -7,6 +7,7 @@ use opentelemetry::{KeyValue, trace::TracerProvider};
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 
 use opentelemetry_sdk::{
+    propagation::TraceContextPropagator,
     resource::Resource,
     trace::{BatchConfigBuilder, BatchSpanProcessor, Sampler, SdkTracerProvider},
 };
@@ -21,6 +22,7 @@ static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 /// Initialize logging and OpenTelemetry tracing.
 pub fn init(config: &TelemetryConfig) -> Result<()> {
+    opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     // Log level filter (fallback: info)
     let filter = EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 

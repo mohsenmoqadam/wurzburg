@@ -9,13 +9,22 @@ use crate::{
         error::ApiError,
         result_codes::WurzburgResultCode,
     },
-    db::oracle::{CreateCardRangePersistenceOutcome, OracleRepository},
+    db::oracle::{
+        CardRangeMutation, CardRangeMutationPersistenceOutcome, CardRangeMutationResult,
+        CreateCardRangePersistenceOutcome, OracleRepository,
+    },
     domain::card_range::{CardRange, CardRangeListPage, CardRangeListQuery, NewCardRange},
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateCardRangeOutcome {
-    Created(CardRange),
+    Created(Box<CardRange>),
+    Replayed(serde_json::Value),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CardRangeMutationServiceOutcome {
+    Applied(Box<CardRangeMutationResult>),
     Replayed(serde_json::Value),
 }
 
@@ -99,5 +108,94 @@ impl CardRangeService {
             .list_card_ranges(query)
             .await
             .map_err(ApiError::from_database)
+    }
+
+    #[tracing::instrument(skip(self, context, mutation), fields(card_range_id = %card_range_id))]
+    pub async fn mutate_card_range(
+        &self,
+        context: &MutationCommandContext,
+        card_range_id: Uuid,
+        mutation: CardRangeMutation,
+    ) -> Result<CardRangeMutationServiceOutcome, ApiError> {
+        require_scope(&context.actor, "platform.card_ranges:write")?;
+        let outcome = self
+            .repository
+            .mutate_card_range_atomic(context.clone(), card_range_id, mutation)
+            .await
+            .map_err(ApiError::from_database)?;
+        match outcome {
+            CardRangeMutationPersistenceOutcome::Applied(result) => {
+                Ok(CardRangeMutationServiceOutcome::Applied(result))
+            }
+            CardRangeMutationPersistenceOutcome::Replayed(value) => {
+                Ok(CardRangeMutationServiceOutcome::Replayed(value))
+            }
+            CardRangeMutationPersistenceOutcome::NotFound => {
+                Err(ApiError::new(WurzburgResultCode::CardRangeNotFound))
+            }
+            CardRangeMutationPersistenceOutcome::InvalidTransition => Err(ApiError::new(
+                WurzburgResultCode::CardRangeInvalidTransition,
+            )),
+            CardRangeMutationPersistenceOutcome::Immutable => {
+                Err(ApiError::new(WurzburgResultCode::CardRangeImmutableField))
+            }
+            CardRangeMutationPersistenceOutcome::PrerequisitesMissing => Err(ApiError::new(
+                WurzburgResultCode::CardRangePrerequisitesMissing,
+            )),
+            CardRangeMutationPersistenceOutcome::PublicationPending => Err(ApiError::new(
+                WurzburgResultCode::RangeControlPublicationPending,
+            )),
+            CardRangeMutationPersistenceOutcome::Overlap => {
+                Err(ApiError::new(WurzburgResultCode::CardRangeOverlap))
+            }
+            CardRangeMutationPersistenceOutcome::ContractInvalid(message) => Err(
+                ApiError::with_message(WurzburgResultCode::InvalidCardRangeBoundary, message),
+            ),
+            CardRangeMutationPersistenceOutcome::IdempotencyConflict => {
+                Err(ApiError::new(WurzburgResultCode::IdempotencyKeyConflict))
+            }
+            CardRangeMutationPersistenceOutcome::IdempotencyInProgress => {
+                Err(ApiError::new(WurzburgResultCode::IdempotencyInProgress))
+            }
+            CardRangeMutationPersistenceOutcome::IdempotencyInvalidState => {
+                Err(ApiError::new(WurzburgResultCode::IdempotencyError))
+            }
+        }
+    }
+
+    #[tracing::instrument(skip(self, actor), fields(card_range_id = %card_range_id, actor.subject = %actor.subject))]
+    pub async fn list_provider_eligibility(
+        &self,
+        actor: &TrustedActor,
+        card_range_id: Uuid,
+    ) -> Result<Vec<crate::domain::card_range::CardRangeProviderEligibility>, ApiError> {
+        require_scope(actor, "platform.card_ranges:read")?;
+        if self
+            .repository
+            .get_card_range(card_range_id)
+            .await
+            .map_err(ApiError::from_database)?
+            .is_none()
+        {
+            return Err(ApiError::new(WurzburgResultCode::CardRangeNotFound));
+        }
+        self.repository
+            .list_card_range_providers(card_range_id)
+            .await
+            .map_err(ApiError::from_database)
+    }
+
+    #[tracing::instrument(skip(self, actor), fields(operation.id = %operation_id, actor.subject = %actor.subject))]
+    pub async fn get_operation(
+        &self,
+        actor: &TrustedActor,
+        operation_id: Uuid,
+    ) -> Result<crate::db::oracle::IntegrationOperationView, ApiError> {
+        require_scope(actor, "platform.card_ranges:read")?;
+        self.repository
+            .get_integration_operation(operation_id)
+            .await
+            .map_err(ApiError::from_database)?
+            .ok_or_else(|| ApiError::new(WurzburgResultCode::IntegrationOperationNotFound))
     }
 }
