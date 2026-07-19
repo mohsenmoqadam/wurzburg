@@ -4,6 +4,7 @@ use rdkafka::{
     admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
     client::DefaultClientContext,
     types::RDKafkaErrorCode,
+    util::Timeout,
 };
 
 use crate::config::KafkaConfig;
@@ -88,6 +89,37 @@ impl AppKafkaAdmin {
             Some(Err((_, code))) => bail!("Kafka delete-topic operation failed with code {code:?}"),
             None => bail!("Kafka delete-topic response was empty"),
         }
+    }
+
+    #[tracing::instrument(skip(self, topic_names), fields(messaging.system="kafka", messaging.operation.name="verify_topics"))]
+    pub fn verify_topics<'a>(&self, topic_names: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        for topic_name in topic_names {
+            validate_topic_name(topic_name)?;
+            let metadata = self
+                .client
+                .inner()
+                .fetch_metadata(Some(topic_name), Timeout::After(self.request_timeout))
+                .with_context(|| format!("failed to fetch Kafka metadata for {topic_name}"))?;
+            let topic = metadata
+                .topics()
+                .iter()
+                .find(|topic| topic.name() == topic_name)
+                .with_context(|| format!("Kafka topic {topic_name} does not exist"))?;
+            if let Some(error) = topic.error() {
+                bail!("Kafka topic {topic_name} metadata failed with code {error:?}");
+            }
+            if topic.partitions().is_empty() {
+                bail!("Kafka topic {topic_name} has no partitions");
+            }
+            if topic
+                .partitions()
+                .iter()
+                .any(|partition| partition.error().is_some() || partition.leader() < 0)
+            {
+                bail!("Kafka topic {topic_name} has an unavailable partition");
+            }
+        }
+        Ok(())
     }
 }
 

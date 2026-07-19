@@ -36,9 +36,9 @@ connection_timeout_ms = 3000
 response_timeout_ms = 2000
 
 [kafka]
-bootstrap_servers = "localhost:9092"
-security_protocol = "SASL_PLAINTEXT"
-security_cert = ""
+bootstrap_servers = "kafka.arshamnovin.ir:9092"
+security_protocol = "SASL_SSL"
+security_cert = "/home/mohsen/Codes/war/wurzburg/secrets/kafka.arshamnovin.ir.crt"
 sasl_mechanism = "SCRAM-SHA-512"
 sasl_username = "producer_user"
 sasl_password = "producer_password"

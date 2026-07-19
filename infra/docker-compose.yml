@@ -1,6 +1,6 @@
 services:
   # ----------------------------------------
-  # Redis
+  # Dragonfly (Redis-compatible runtime projection store)
   # ----------------------------------------
   #redis:
   #  image: redis@sha256:315270d166080f537bbdf1b489b603aaaa213cb55a544acfa51feb7481abb1c0
@@ -29,7 +29,7 @@ services:
       - dragonfly_data:/data
 
   # ----------------------------------------
-  # Redis
+  # Dragonfly browser
   # ----------------------------------------
   redis-commander:
     image: rediscommander/redis-commander@sha256:19cd0c49f418779fa2822a0496c5e6516d0c792effc39ed20089e6268477e40a
@@ -49,19 +49,16 @@ services:
     container_name: wurzburg_kafka
     user: "root"
     ports:
-      - "9092:9092"   # Internal / Rust App (PLAINTEXT)
-      - "9093:9093"   # External / Clients (SASL_SSL)
+      - "9092:9092"   # Host applications (SASL_SSL)
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      # Add EXTERNAL port
       KAFKA_OPTS: "-Djava.security.auth.login.config=/etc/kafka/secrets/kafka_server_jaas.conf"
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9094,PLAINTEXT_HOST://0.0.0.0:9092,EXTERNAL://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092,EXTERNAL://kafka.arshamnovin.ir:9093
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9094,HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,HOST://kafka.arshamnovin.ir:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      # Protocol maps
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,EXTERNAL:SASL_SSL
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:SASL_SSL
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -69,15 +66,14 @@ services:
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       
-      # --- SSL Config ---
+      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      KAFKA_LISTENER_NAME_HOST_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
       KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka.server.keystore.jks
       KAFKA_SSL_KEYSTORE_PASSWORD: password
       KAFKA_SSL_KEY_PASSWORD: password
       KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/kafka.server.truststore.jks
       KAFKA_SSL_TRUSTSTORE_PASSWORD: password
-      
-      # --- SASL/SCRAM Config ---
-      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      KAFKA_SSL_CLIENT_AUTH: none
       
       # --- ACL Config in KRaft ---
       KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
@@ -87,6 +83,37 @@ services:
     volumes:
       - kafka_data:/tmp/kraft-combined-logs
       - ../secrets:/etc/kafka/secrets
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 30s
+      retries: 20
+      start_period: 30s
+
+  kafka-init:
+    image: confluentinc/cp-kafka@sha256:acbbf674f2ed40e5d0a8ca51beb0f00692c866fc22b5ce06f8cadbdc54cd4436
+    container_name: wurzburg_kafka_init
+    user: "root"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVER: kafka:29092
+      WURZBURG_KAFKA_USERNAME: producer_user
+      WURZBURG_KAFKA_PASSWORD: producer_password
+      WOLFSBURG_KAFKA_USERNAME: wolfsburg_user
+      WOLFSBURG_KAFKA_PASSWORD: wolfsburg_password
+      WURZBURG_COMMAND_TOPIC: wurzburg.runtime-projection.commands.v1
+      WOLFSBURG_RECEIPT_TOPIC: wolfsburg.runtime-projection.receipts.v1
+      WURZBURG_RECEIPT_GROUP: wurzburg-runtime-receipts-v1
+      WOLFSBURG_COMMAND_GROUP: wolfsburg-runtime-projections-v1
+      KAFKA_TOPIC_PARTITIONS: 1
+      KAFKA_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - ./kafka/bootstrap-local.sh:/opt/wurzburg/bootstrap-local.sh:ro
+      - kafka_data:/var/lib/kafka-data
+    entrypoint: ["/bin/bash", "/opt/wurzburg/bootstrap-local.sh"]
+    restart: "no"
 
   kafka-ui:
     image: provectuslabs/kafka-ui@sha256:8f2ff02d64b0a7a2b71b6b3b3148b85f66d00ec20ad40c30bdcd415d46d31818
@@ -122,20 +149,25 @@ services:
       retries: 5
   
   # ----------------------------------------
-  # TigerBeetle (Setup / Format)
+  # TigerBeetle (Idempotent Setup / Format)
   # ----------------------------------------
   # at host not container: sudo sysctl -w kernel.io_uring_disabled=0
-  # docker compose run --rm tigerbeetle-init
   tigerbeetle-init:
     image: ghcr.io/tigerbeetle/tigerbeetle@sha256:fa05759708e281ad03a66f31b3a882cacaee3478f9f06361484033e75d36b02c
     container_name: wurzburg_tigerbeetle_init
-    profiles:
-      - setup
-    security_opt:              
-      - seccomp:unconfined    
+    security_opt:
+      - seccomp:unconfined
     volumes:
       - tigerbeetle_data:/data
-    command: format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -f /data/0_0.tigerbeetle ]; then
+          echo "TigerBeetle data file already exists; skipping format"
+        else
+          /tigerbeetle format --cluster=0 --replica=0 --replica-count=1 /data/0_0.tigerbeetle
+        fi
+    restart: "no"
 
   # ----------------------------------------
   # TigerBeetle (Main Node)
@@ -145,11 +177,14 @@ services:
     container_name: wurzburg_tigerbeetle
     ports:
       - "3001:3001"
-    security_opt:              
-      - seccomp:unconfined    
+    security_opt:
+      - seccomp:unconfined
     volumes:
       - tigerbeetle_data:/data
     command: start --addresses=0.0.0.0:3001 /data/0_0.tigerbeetle
+    depends_on:
+      tigerbeetle-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # ----------------------------------------

@@ -23,7 +23,10 @@ pub use card_range_command::{
     CardRangeMutation, CardRangeMutationPersistenceOutcome, CardRangeMutationResult,
 };
 pub use health::{OracleHealth, OracleHealthRepository};
-pub use migrations::{OracleMigration, OracleMigrator, prepare_oracle_schema, wurzburg_migrations};
+pub use migrations::{
+    OracleMigration, OracleMigrator, prepare_oracle_schema, verify_oracle_schema,
+    wurzburg_migrations,
+};
 pub use operation::{IntegrationOperationStatus, IntegrationOperationView};
 pub use outbox::ClaimedOutboxEvent;
 pub use pool::{OracleConnectConfig, OraclePool};

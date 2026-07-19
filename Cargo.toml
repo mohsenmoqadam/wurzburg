@@ -55,3 +55,9 @@ reqwest = { version = "0.12.28", default-features = false }
 
 [profile.dev]
 #opt-level = 3
+
+# Wurzburg has many scenario-test binaries. Full debug information duplicates
+# gigabytes of link artifacts without improving production-contract coverage.
+[profile.test]
+debug = 0
+incremental = false

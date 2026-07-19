@@ -5,7 +5,7 @@ use tokio::task;
 use wurzburg::{
     api::{router::build_app_router, swagger::swagger_router},
     config::Settings,
-    db::oracle::prepare_oracle_schema,
+    db::oracle::verify_oracle_schema,
     kafka::{outbox_relay::start_outbox_relay, receipt_consumer::start_receipt_consumer},
     state::AppState,
     telemetry,
@@ -14,14 +14,16 @@ use wurzburg::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load config
-    let settings = Settings::new().expect("Failed to load configuration");
+    let mut settings = Settings::new().expect("Failed to load configuration");
+    settings.apply_runtime_instance_identity();
 
     // 2. Init telemetry
     telemetry::tracing::init(&settings.telemetry)?;
     tracing::info!("Starting server in {} environment", Settings::environment());
 
-    // 3. Ensure Oracle schema is ready before accepting traffic.
-    prepare_oracle_schema(&settings.database, &settings.migrations).await?;
+    // 3. Runtime replicas only verify schema. One deployment job or explicit
+    // developer command owns migration and destructive reset operations.
+    verify_oracle_schema(&settings.database, &settings.migrations).await?;
 
     // 4. Init state (DB, Redis)
     let app_state = Arc::new(AppState::new(settings.clone()).await?);

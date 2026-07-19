@@ -237,6 +237,37 @@ impl Settings {
     pub fn is_staging() -> bool {
         Self::environment() == "staging"
     }
+
+    /// Adds a process-unique suffix to diagnostic and lease-owner identities.
+    /// Kafka group IDs remain stable so replicas cooperate as one consumer.
+    pub fn apply_runtime_instance_identity(&mut self) {
+        let host = env::var("POD_NAME")
+            .or_else(|_| env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "local".to_string());
+        let host = host
+            .chars()
+            .map(|value| {
+                if value.is_ascii_alphanumeric() || matches!(value, '.' | '_' | '-') {
+                    value
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+        let instance = format!("{host}-{}", std::process::id());
+        self.kafka.producer.client_id = append_instance(&self.kafka.producer.client_id, &instance);
+        self.kafka.materialization_receipts.client_id =
+            append_instance(&self.kafka.materialization_receipts.client_id, &instance);
+        self.kafka.outbox_relay.worker_id =
+            append_instance(&self.kafka.outbox_relay.worker_id, &instance);
+    }
+}
+
+fn append_instance(base: &str, instance: &str) -> String {
+    const MAX_IDENTITY_LENGTH: usize = 240;
+    let available = MAX_IDENTITY_LENGTH.saturating_sub(instance.len() + 1);
+    let base = base.chars().take(available).collect::<String>();
+    format!("{base}:{instance}")
 }
 
 impl DatabaseConfig {
@@ -437,5 +468,26 @@ mod tests {
             .expect_err("zstd must not pass without the matching librdkafka build feature");
 
         assert!(error.to_string().contains("supports none and lz4"));
+    }
+
+    #[test]
+    fn runtime_identity_is_unique_without_changing_consumer_group() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("APP_ENVIRONMENT", "test") };
+        let mut settings = Settings::new().expect("settings should load");
+        let group_id = settings.kafka.materialization_receipts.group_id.clone();
+
+        settings.apply_runtime_instance_identity();
+
+        assert!(settings.kafka.outbox_relay.worker_id.contains(':'));
+        assert!(settings.kafka.producer.client_id.contains(':'));
+        assert!(
+            settings
+                .kafka
+                .materialization_receipts
+                .client_id
+                .contains(':')
+        );
+        assert_eq!(settings.kafka.materialization_receipts.group_id, group_id);
     }
 }

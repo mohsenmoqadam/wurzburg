@@ -177,6 +177,58 @@ pub async fn prepare_oracle_schema(
     Ok(())
 }
 
+/// Verifies the exact migration set without changing Oracle. Runtime service
+/// instances use this check so schema ownership remains with one deployment
+/// job or an explicit developer command.
+pub async fn verify_oracle_schema(
+    database: &DatabaseConfig,
+    migrations: &MigrationConfig,
+) -> DbResult<()> {
+    if !migrations.enabled {
+        return Ok(());
+    }
+
+    let oracle_config = OracleConnectConfig::from_driver_config(database)?;
+    let oracle_pool = OraclePool::connect(oracle_config).await?;
+    oracle_pool
+        .with_connection(|connection| {
+            let expected_migrations = wurzburg_migrations();
+            for migration in &expected_migrations {
+                match migration_checksum(connection, migration.version)? {
+                    Some(checksum) if checksum == migration.checksum => {}
+                    Some(checksum) => {
+                        return Err(DbError::Configuration(format!(
+                            "Oracle migration {} checksum mismatch: applied {}, expected {}",
+                            migration.version, checksum, migration.checksum
+                        )));
+                    }
+                    None => {
+                        return Err(DbError::Configuration(format!(
+                            "required Oracle migration {} is not applied",
+                            migration.version
+                        )));
+                    }
+                }
+            }
+
+            let applied_count = connection
+                .query_row_as::<i64>("SELECT COUNT(*) FROM schema_migrations", &[])
+                .map_err(|error| {
+                    DbError::Query(format!(
+                        "failed to count applied Oracle migrations: {error}"
+                    ))
+                })?;
+            if applied_count != expected_migrations.len() as i64 {
+                return Err(DbError::Configuration(format!(
+                    "Oracle migration set mismatch: found {applied_count}, expected {}",
+                    expected_migrations.len()
+                )));
+            }
+            Ok(())
+        })
+        .await
+}
+
 pub fn wurzburg_migrations() -> Vec<OracleMigration> {
     let v001_sql = include_str!("../../../migrations/oracle/V001__foundation.sql");
     let v002_sql = include_str!("../../../migrations/oracle/V002__card_foundation.sql");

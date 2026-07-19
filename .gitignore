@@ -1,1 +1,4 @@
 /target
+/config/local.toml
+/.env
+/infra/.env
