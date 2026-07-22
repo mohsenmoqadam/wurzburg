@@ -5,6 +5,7 @@ pub mod error;
 pub mod handlers;
 pub mod idempotency;
 pub mod request_context;
+pub mod response;
 pub mod result_codes;
 pub mod router;
 pub mod swagger;

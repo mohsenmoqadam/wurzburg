@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use axum::{
-    Json,
     body::Bytes,
     extract::{OriginalUri, Path, Query, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, Method, StatusCode},
+    response::Response,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,6 +18,7 @@ use crate::{
         error::ApiError,
         idempotency::{canonical_request_hash, require_idempotency_key},
         request_context::extract_trusted_request_context,
+        response::success_response,
         result_codes::WurzburgResultCode,
     },
     db::oracle::CardRangeMutation,
@@ -31,7 +31,6 @@ use crate::{
         CardRangeMutationServiceOutcome, CardRangeService, CreateCardRangeOutcome,
     },
     state::AppState,
-    telemetry::http::{RESULT_CODE_HEADER, RESULT_SYMBOL_HEADER},
 };
 
 const CREATE_CARD_RANGE_OPERATION: &str = "card_ranges.create";
@@ -227,10 +226,7 @@ pub async fn get_card_range(
     let service = CardRangeService::new(state.db.clone());
     let card_range = service.get_card_range(&actor, card_range_id).await?;
 
-    Ok(success_response(
-        StatusCode::OK,
-        CardRangeResponse::from(card_range),
-    ))
+    success_response(StatusCode::OK, CardRangeResponse::from(card_range))
 }
 
 #[utoipa::path(
@@ -271,10 +267,7 @@ pub async fn list_card_ranges(
     let service = CardRangeService::new(state.db.clone());
     let page = service.list_card_ranges(&actor, query).await?;
 
-    Ok(success_response(
-        StatusCode::OK,
-        ListCardRangesResponse::from(page),
-    ))
+    success_response(StatusCode::OK, ListCardRangesResponse::from(page))
 }
 
 #[utoipa::path(
@@ -352,13 +345,10 @@ pub async fn create_card_range(
         .create_card_range(&command_context, request.try_into()?)
         .await?
     {
-        CreateCardRangeOutcome::Created(card_range) => Ok(success_response(
-            StatusCode::CREATED,
-            CardRangeResponse::from(*card_range),
-        )),
-        CreateCardRangeOutcome::Replayed(snapshot) => {
-            Ok(success_response(StatusCode::OK, snapshot))
+        CreateCardRangeOutcome::Created(card_range) => {
+            success_response(StatusCode::CREATED, CardRangeResponse::from(*card_range))
         }
+        CreateCardRangeOutcome::Replayed(snapshot) => success_response(StatusCode::OK, snapshot),
     }
 }
 
@@ -524,10 +514,7 @@ pub async fn list_card_range_providers(
             status: item.status.as_db_value().to_string(),
         })
         .collect();
-    Ok(success_response(
-        StatusCode::OK,
-        ListCardRangeProvidersResponse { items },
-    ))
+    success_response(StatusCode::OK, ListCardRangeProvidersResponse { items })
 }
 
 #[utoipa::path(get, path="/api/v1/operations/{operation_id}", tag="Operations", params(("operation_id"=Uuid, Path)), responses((status=200, body=IntegrationOperationResponse), (status=404, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
@@ -549,7 +536,7 @@ pub async fn get_integration_operation(
         crate::db::oracle::IntegrationOperationStatus::Materialized => "MATERIALIZED",
         crate::db::oracle::IntegrationOperationStatus::DeadLetter => "DEAD_LETTER",
     };
-    Ok(success_response(
+    success_response(
         StatusCode::OK,
         IntegrationOperationResponse {
             operation_id: operation.operation_id,
@@ -563,7 +550,7 @@ pub async fn get_integration_operation(
             published_at: operation.published_at,
             materialized_at: operation.materialized_at,
         },
-    ))
+    )
 }
 
 fn mutation_request<T: for<'de> Deserialize<'de>>(
@@ -597,15 +584,15 @@ fn mutation_response(
     status: StatusCode,
 ) -> Result<Response, ApiError> {
     match outcome {
-        CardRangeMutationServiceOutcome::Applied(result) => Ok(success_response(
+        CardRangeMutationServiceOutcome::Applied(result) => success_response(
             status,
             CardRangeMutationResponse {
                 operation_id: result.operation_id,
                 card_range: result.card_range.into(),
             },
-        )),
+        ),
         CardRangeMutationServiceOutcome::Replayed(snapshot) => {
-            Ok(success_response(StatusCode::OK, snapshot))
+            success_response(StatusCode::OK, snapshot)
         }
     }
 }
@@ -882,22 +869,6 @@ fn invalid_cursor() -> ApiError {
         WurzburgResultCode::InvalidCardRangeFilter,
         serde_json::json!({ "filter": "cursor" }),
     )
-}
-
-fn success_response<T>(status: StatusCode, body: T) -> Response
-where
-    T: Serialize,
-{
-    let (rs_code, code, _, _) = WurzburgResultCode::Success.parts();
-    let mut response = (status, Json(body)).into_response();
-    response.headers_mut().insert(
-        RESULT_CODE_HEADER.clone(),
-        HeaderValue::from_str(&rs_code.to_string()).expect("static result code is valid"),
-    );
-    response
-        .headers_mut()
-        .insert(RESULT_SYMBOL_HEADER.clone(), HeaderValue::from_static(code));
-    response
 }
 
 fn empty_metadata() -> serde_json::Value {

@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use axum::{
-    Json,
     body::Bytes,
     extract::{OriginalUri, Path, Query, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, Method, StatusCode},
+    response::Response,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -18,6 +17,7 @@ use crate::{
         error::ApiError,
         idempotency::{canonical_request_hash, require_idempotency_key},
         request_context::extract_trusted_request_context,
+        response::success_response,
         result_codes::WurzburgResultCode,
     },
     db::oracle::{PolicyMutationDisposition, SetCardPolicyResult},
@@ -27,7 +27,6 @@ use crate::{
     },
     services::card_policy::{CardPolicyService, SetCardPolicyOutcome},
     state::AppState,
-    telemetry::http::{RESULT_CODE_HEADER, RESULT_SYMBOL_HEADER},
 };
 
 const SET_CARD_POLICY_OPERATION: &str = "card_policies.set";
@@ -395,17 +394,4 @@ impl From<SetCardPolicyResult> for SetCardPolicyResponse {
             limit_calendar: value.limit_calendar,
         }
     }
-}
-
-fn success_response<T: Serialize>(status: StatusCode, body: T) -> Result<Response, ApiError> {
-    let (rs_code, code, _, _) = WurzburgResultCode::Success.parts();
-    let mut response = (status, Json(body)).into_response();
-    response.headers_mut().insert(
-        RESULT_CODE_HEADER.clone(),
-        HeaderValue::from_str(&rs_code.to_string()).expect("static result code is valid"),
-    );
-    response
-        .headers_mut()
-        .insert(RESULT_SYMBOL_HEADER.clone(), HeaderValue::from_static(code));
-    Ok(response)
 }
