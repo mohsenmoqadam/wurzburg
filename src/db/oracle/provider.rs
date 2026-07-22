@@ -18,7 +18,10 @@ use crate::{
     domain::{
         audit::{AuditAction, NewAuditLog, TrustedAuditContext},
         idempotency::IdempotencyStatus,
-        provider::{NewProvider, Provider, ProviderAccountCategory, ProviderStatus},
+        provider::{
+            NewProvider, Provider, ProviderAccountCategory, ProviderKafkaProvisioningStatus,
+            ProviderStatus,
+        },
     },
 };
 
@@ -61,7 +64,17 @@ impl OracleRepository {
                 insert_contacts(connection, &provider, &context.actor.subject)?;
                 insert_operational_profile(connection, &provider, &context.actor.subject)?;
                 insert_ledger_mappings(connection, provider.provider_id)?;
-                insert_provisioning_jobs(connection, provider.provider_id)?;
+                insert_kafka_access(connection, &provider)?;
+                insert_provider_event_subscriptions(
+                    connection,
+                    provider.provider_id,
+                    &context.actor.subject,
+                )?;
+                insert_provisioning_jobs(
+                    connection,
+                    provider.provider_id,
+                    provider.kafka_access.is_some(),
+                )?;
 
                 let created = fetch_provider(connection, provider.provider_id)?;
                 let snapshot = created.replay_snapshot();
@@ -105,7 +118,10 @@ impl OracleRepository {
                     )
                     .map_err(|error| DbError::Query(format!("failed to get provider: {error}")))?;
                 match rows.next() {
-                    Some(Ok(row)) => map_provider_row(&row).map(Some),
+                    Some(Ok(row)) => {
+                        let kafka_status = provider_kafka_status(connection, provider_id)?;
+                        map_provider_row(&row, kafka_status).map(Some)
+                    }
                     Some(Err(error)) => Err(DbError::Query(format!(
                         "failed to read provider row: {error}"
                     ))),
@@ -269,19 +285,58 @@ fn insert_ledger_mappings(connection: &oracle::Connection, provider_id: Uuid) ->
     Ok(())
 }
 
-fn insert_provisioning_jobs(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<()> {
+fn insert_kafka_access(connection: &oracle::Connection, provider: &NewProvider) -> DbResult<()> {
+    let Some(access) = &provider.kafka_access else {
+        return Ok(());
+    };
+    let brokers = serde_json::to_string(&access.bootstrap_servers)
+        .map_err(|error| DbError::Query(format!("failed to serialize Kafka brokers: {error}")))?;
+    let credential_version = i64::try_from(access.credential_version).map_err(|_| {
+        DbError::Query("Kafka credential version exceeds Oracle NUMBER".to_string())
+    })?;
+    connection.execute(
+        "INSERT INTO provider_kafka_access (provider_kafka_access_id,provider_id,topic_name,username,consumer_group,security_protocol,sasl_mechanism,bootstrap_servers_json,security_cert,credential_status) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,:9,'PROVISIONING')",
+        &[&uuid_to_raw16(access.provider_kafka_access_id).to_vec(), &uuid_to_raw16(provider.provider_id).to_vec(), &access.topic_name, &access.username, &access.consumer_group, &access.security_protocol, &access.sasl_mechanism, &brokers, &access.security_cert],
+    ).map_err(|error| DbError::Query(format!("failed to insert provider Kafka access: {error}")))?;
+    connection.execute(
+        "INSERT INTO provider_kafka_credentials (provider_kafka_credential_id,provider_kafka_access_id,provider_id,credential_version,password_ciphertext,encryption_key_version,status) VALUES (:1,:2,:3,:4,:5,:6,'CANDIDATE')",
+        &[&uuid_to_raw16(access.provider_kafka_credential_id).to_vec(), &uuid_to_raw16(access.provider_kafka_access_id).to_vec(), &uuid_to_raw16(provider.provider_id).to_vec(), &credential_version, &access.password_ciphertext, &access.encryption_key_version],
+    ).map_err(|error| DbError::Query(format!("failed to insert Provider Kafka credential: {error}")))?;
+    Ok(())
+}
+
+fn insert_provider_event_subscriptions(
+    connection: &oracle::Connection,
+    provider_id: Uuid,
+    actor_subject: &str,
+) -> DbResult<()> {
+    for event_type in crate::domain::provider_event::ProviderEventType::ALL {
+        connection.execute(
+            "INSERT INTO provider_event_subscriptions (provider_event_subscription_id,provider_id,event_type,enabled,version,updated_by_subject,reason) VALUES (:1,:2,:3,0,1,:4,'disabled by default during provider onboarding')",
+            &[&uuid_to_raw16(Uuid::new_v4()).to_vec(), &uuid_to_raw16(provider_id).to_vec(), &event_type.as_str(), &actor_subject],
+        ).map_err(|error| DbError::Query(format!("failed to seed Provider event subscriptions: {error}")))?;
+    }
+    Ok(())
+}
+
+fn insert_provisioning_jobs(
+    connection: &oracle::Connection,
+    provider_id: Uuid,
+    kafka_enabled: bool,
+) -> DbResult<()> {
     let provider_id_simple = provider_id.simple().to_string();
-    for (job_type, request) in [
-        ("TIGERBEETLE_PROVISION", serde_json::json!({})),
-        (
+    let mut jobs = vec![("TIGERBEETLE_PROVISION", serde_json::json!({}))];
+    if kafka_enabled {
+        jobs.push((
             "KAFKA_PROVISION",
             serde_json::json!({
                 "topic_name": format!("provider.events.{provider_id_simple}"),
                 "username": format!("provider_user_{provider_id_simple}"),
                 "consumer_group": format!("provider_group_{provider_id_simple}")
             }),
-        ),
-    ] {
+        ));
+    }
+    for (job_type, request) in jobs {
         connection.execute(
             "INSERT INTO provider_provisioning_jobs (provider_provisioning_job_id,provider_id,job_type,status,request_json,result_json) VALUES (:1,:2,:3,'PENDING',:4,'{}')",
             &[&uuid_to_raw16(Uuid::new_v4()).to_vec(), &uuid_to_raw16(provider_id).to_vec(), &job_type, &request.to_string()],
@@ -297,7 +352,8 @@ fn fetch_provider(connection: &oracle::Connection, provider_id: Uuid) -> DbResul
             &[&uuid_to_raw16(provider_id).to_vec()],
         )
         .map_err(|error| DbError::Query(format!("failed to fetch provider: {error}")))?;
-    map_provider_row(&row)
+    let kafka_status = provider_kafka_status(connection, provider_id)?;
+    map_provider_row(&row, kafka_status)
 }
 
 pub(crate) fn fetch_provider_for_command(
@@ -311,7 +367,29 @@ fn provider_select_sql() -> &'static str {
     "SELECT provider_id,legal_name,trade_name,tax_id,registration_number,email_address,website_url,mailing_address,status,JSON_SERIALIZE(metadata_json RETURNING CLOB),TO_CHAR(SYS_EXTRACT_UTC(created_at),'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'),TO_CHAR(SYS_EXTRACT_UTC(updated_at),'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"') FROM providers WHERE provider_id=:1"
 }
 
-fn map_provider_row(row: &Row) -> DbResult<Provider> {
+fn provider_kafka_status(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<String> {
+    let provider_id = uuid_to_raw16(provider_id).to_vec();
+    let pending = connection.query_row_as::<i64>(
+        "SELECT COUNT(*) FROM provider_provisioning_jobs WHERE provider_id=:1 AND job_type IN ('KAFKA_PROVISION','KAFKA_ROTATE','KAFKA_SUSPEND','KAFKA_RESUME') AND status IN ('PENDING','RUNNING')",
+        &[&provider_id],
+    ).map_err(|error| DbError::Query(format!("failed to count pending Provider Kafka jobs: {error}")))?;
+    if pending > 0 {
+        return Ok("PENDING".to_string());
+    }
+    match connection.query_row_as::<String>(
+        "SELECT credential_status FROM provider_kafka_access WHERE provider_id=:1",
+        &[&provider_id],
+    ) {
+        Ok(status) if status == "FAILED" => Ok("FAILED".to_string()),
+        Ok(_) => Ok("SUCCEEDED".to_string()),
+        Err(error) if error.kind() == oracle::ErrorKind::NoDataFound => Ok("DISABLED".to_string()),
+        Err(error) => Err(DbError::Query(format!(
+            "failed to read Provider Kafka provisioning status: {error}"
+        ))),
+    }
+}
+
+fn map_provider_row(row: &Row, kafka_status: String) -> DbResult<Provider> {
     let provider_id: Vec<u8> = row.get(0).map_err(read_error)?;
     let status: String = row.get(8).map_err(read_error)?;
     let metadata: String = row.get(9).map_err(read_error)?;
@@ -332,6 +410,17 @@ fn map_provider_row(row: &Row) -> DbResult<Provider> {
             .map_err(|error| DbError::Query(format!("invalid provider metadata: {error}")))?,
         created_at: parse_utc(&created_at)?,
         updated_at: parse_utc(&updated_at)?,
+        kafka_provisioning_status: match kafka_status.as_str() {
+            "DISABLED" => ProviderKafkaProvisioningStatus::Disabled,
+            "PENDING" => ProviderKafkaProvisioningStatus::Pending,
+            "SUCCEEDED" => ProviderKafkaProvisioningStatus::Succeeded,
+            "FAILED" => ProviderKafkaProvisioningStatus::Failed,
+            _ => {
+                return Err(DbError::Query(
+                    "unknown Kafka provisioning status".to_string(),
+                ));
+            }
+        },
     })
 }
 

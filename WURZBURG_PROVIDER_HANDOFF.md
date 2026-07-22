@@ -680,10 +680,9 @@ Adapter behavior:
 
 - Topic creation/deletion uses the native Kafka Admin API. Existing-topic and
   missing-topic broker results are idempotent success respectively.
-- The Rust Kafka client used by Wurzburg does not expose SCRAM-user mutation or
-  ACL administration. Those operations must use a dedicated, authenticated
-  provisioning adapter or cluster-management service with a versioned contract;
-  Wurzburg must not execute local Kafka shell scripts.
+- Wurzburg uses librdkafka's native Admin API through a memory-safe Rust adapter
+  for SCRAM-user mutation and exact ACL administration. The runtime never
+  executes Kafka shell scripts.
 - SCRAM and ACL provisioning remains part of the durable asynchronous provider
   job. A successful topic creation alone does not complete Kafka provisioning.
 - `grant_consumer_acls` grants `Read` and `Describe` on the provider topic and
@@ -753,18 +752,40 @@ provider_kafka_access
 - topic_name VARCHAR2(255) not null unique
 - username VARCHAR2(255) not null unique
 - consumer_group VARCHAR2(255) not null unique
-- password_ciphertext VARCHAR2(4000) not null
-- encryption_key_version VARCHAR2(128) not null
 - security_protocol VARCHAR2(64) not null
 - sasl_mechanism VARCHAR2(64) not null
 - bootstrap_servers_json JSON not null
 - security_cert CLOB nullable
-- credential_status ACTIVE | ROTATING | SUSPENDED | REVOKED
+- credential_status PROVISIONING | ACTIVE | ROTATING | SUSPENDING | SUSPENDED |
+  RESUMING | REVOKED | FAILED
 - last_delivered_at TIMESTAMP WITH TIME ZONE nullable
 - rotated_at TIMESTAMP WITH TIME ZONE nullable
 - created_at
 - updated_at
 ```
+
+Credential history is separate from stable connection metadata:
+
+```text
+provider_kafka_credentials
+- provider_kafka_credential_id RAW(16) primary key
+- provider_kafka_access_id RAW(16) not null
+- provider_id RAW(16) not null
+- credential_version NUMBER(19,0) not null
+- password_ciphertext VARCHAR2(4000) not null
+- encryption_key_version VARCHAR2(128) not null
+- status CANDIDATE | ACTIVE | SUPERSEDED | REVOKED | FAILED
+- activated_at nullable
+- superseded_at nullable
+- revoked_at nullable
+- created_at
+- updated_at
+```
+
+Oracle enforces at most one ACTIVE and one CANDIDATE credential per provider.
+Rotation keeps the ACTIVE credential readable until broker mutation and
+verification succeed, then promotes the CANDIDATE and supersedes the old row in
+one Oracle transaction.
 
 Credential creation, reveal, rotation, suspension, and revocation write an
 immutable credential audit row containing actor, action, credential version,
@@ -776,7 +797,8 @@ Provisioning job table:
 provider_provisioning_jobs
 - provider_provisioning_job_id RAW(16) primary key
 - provider_id RAW(16) not null
-- job_type PROVIDER_CREATE | KAFKA_PROVISION | KAFKA_ROTATE | TB_PROVISION
+- job_type TIGERBEETLE_PROVISION | KAFKA_PROVISION | KAFKA_ROTATE |
+  KAFKA_SUSPEND | KAFKA_RESUME
 - status PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
 - attempt_count NUMBER not null
 - next_attempt_at TIMESTAMP WITH TIME ZONE nullable
@@ -794,6 +816,7 @@ Kafka credential retrieval API:
 
 ```text
 GET /api/v1/providers/{provider_id}/kafka/credentials
+GET /api/v1/providers/{provider_id}/kafka/status
 ```
 
 Response:
@@ -809,7 +832,27 @@ Response:
   "consumer_group": "provider_group_4f3c2e1a0b9d4c7e8f6a123456789abc",
   "password": "stored-provider-password",
   "security_cert": "certificate content",
+  "credential_version": 1,
   "credential_status": "ACTIVE"
+}
+```
+
+The status endpoint is the polling resource for asynchronous administration. It
+never returns a password, ciphertext, certificate, or broker error text:
+
+```json
+{
+  "provider_id": "uuid",
+  "access_status": "PROVISIONING",
+  "active_credential_version": null,
+  "candidate_credential_version": 1,
+  "latest_operation": {
+    "operation_id": "uuid",
+    "operation_type": "KAFKA_PROVISION",
+    "status": "PENDING",
+    "attempt_count": 0,
+    "error_code": null
+  }
 }
 ```
 
@@ -1841,13 +1884,14 @@ Canonical contract artifacts live under:
 ```text
 contracts/provider-events/v1/envelope.schema.json
 contracts/provider-events/v1/{event_type}.schema.json
-crates/provider-event-contract/
 ```
 
-The internal `provider-event-contract` crate owns envelope DTOs, event enums,
-validation, masking, decimal-string serialization, and maximum payload size.
-Wurzburg and Wolfsburg depend on the same version. CI validates example payloads
-against JSON Schema and rejects undocumented fields.
+The schemas are canonical. Before provider-event publication is implemented, a
+shared Rust contract module generated from or verified against these artifacts
+must own envelope DTOs, event enums, validation, masking, decimal-string
+serialization, and maximum payload size. Wurzburg and Wolfsburg must use the
+same version. CI validates example payloads against JSON Schema and rejects
+undocumented fields.
 
 Every provider-facing type may be suppressed by the platform/provider gates;
 mandatory internal materialization and audit events use the separate internal
@@ -1929,6 +1973,7 @@ Kafka provisioning:
 
 ```text
 GET    /api/v1/providers/{provider_id}/kafka/credentials
+GET    /api/v1/providers/{provider_id}/kafka/status
 GET    /api/v1/providers/kafka/certificate
 POST   /api/v1/providers/{provider_id}/kafka/provision
 POST   /api/v1/providers/{provider_id}/kafka/rotate-credentials

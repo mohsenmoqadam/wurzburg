@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.wurzburg/provider-events/v1/envelope.schema.json",
+  "title": "Wurzburg Provider Event Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "event_type", "schema_version", "occurred_at", "provider_id", "subject", "data"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": {
+      "enum": ["PROVIDER_STATUS_CHANGED", "USER_ONBOARDED", "CARD_ASSIGNED", "CARD_REPLACED", "CREDIT_GRANTED", "CREDIT_RETURNED", "WITHDRAWAL_CONFIRMED", "WITHDRAWAL_ROLLED_BACK", "FEE_CHARGED"]
+    },
+    "schema_version": { "const": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "provider_id": { "type": "string", "format": "uuid" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_type", "subject_id"],
+      "properties": {
+        "subject_type": { "enum": ["PROVIDER", "USER", "CARD", "PROVIDER_USER_ACCOUNT", "WITHDRAWAL", "FEE"] },
+        "subject_id": { "type": "string", "format": "uuid" },
+        "user_id": { "type": "string", "format": "uuid" },
+        "card_id": { "type": "string", "format": "uuid" },
+        "masked_card_number": { "type": "string", "pattern": "^[0-9]{6}\\*{6}[0-9]{4}$" },
+        "provider_customer_reference": { "type": "string", "minLength": 1, "maxLength": 255 }
+      }
+    },
+    "data": { "type": "object" }
+  }
+}

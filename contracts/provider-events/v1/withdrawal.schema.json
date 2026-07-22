@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.wurzburg/provider-events/v1/withdrawal.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["currency", "principal_amount_rials", "provider_amount_rials", "cms_transaction_reference"],
+  "properties": {
+    "currency": { "const": "IRR" },
+    "principal_amount_rials": { "type": "string", "pattern": "^[0-9]+$" },
+    "provider_amount_rials": { "type": "string", "pattern": "^[0-9]+$" },
+    "cms_transaction_reference": { "type": "string", "minLength": 1, "maxLength": 255 }
+  }
+}

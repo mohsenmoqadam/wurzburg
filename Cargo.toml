@@ -31,6 +31,7 @@ deadpool-redis = "0.23.0"
 redis-macros = "1.0.1"
 
 rand = "0.10.1"
+ring = "0.17.14"
 
 axum = "0.8.8"
 validator = { version = "0.20.0", features = ["derive"] }

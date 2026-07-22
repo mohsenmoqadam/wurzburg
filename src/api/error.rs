@@ -59,9 +59,13 @@ impl ApiError {
 
     pub fn from_database(error: DbError) -> Self {
         let diagnostic_kind = error.diagnostic_kind();
+        let oracle_code = error.oracle_code().unwrap_or("unavailable");
+        let diagnostic_context = error.diagnostic_context();
         tracing::error!(
             db.system = "oracle",
             error.kind = diagnostic_kind,
+            db.oracle.code = oracle_code,
+            db.operation.context = diagnostic_context,
             "Oracle operation failed"
         );
 

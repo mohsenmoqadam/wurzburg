@@ -10,6 +10,7 @@ use wurzburg::domain::provider::{
 #[test]
 fn rejects_overlapping_provider_operational_windows() {
     let provider = NewProvider {
+        kafka_access: None,
         provider_id: Uuid::new_v4(),
         legal_name: "Legal Provider".to_string(),
         trade_name: "Provider".to_string(),

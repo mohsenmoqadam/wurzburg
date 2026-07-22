@@ -70,12 +70,18 @@ wurzburg.runtime-projection.commands.v1
 wolfsburg.runtime-projection.receipts.v1
 ```
 
-It also creates Wurzburg and Wolfsburg SCRAM identities and grants only their
-required topic, group, and idempotent-write permissions. Re-running the service
-is safe. A contract hash in the Kafka volume makes unchanged reruns immediate;
+It also creates Wurzburg, Wolfsburg, and the dedicated Provider Kafka admin
+SCRAM identities and grants only their required topic, group, idempotent-write,
+and provider-resource administration permissions. Re-running the service is
+safe. A contract hash in the Kafka volume makes unchanged reruns immediate;
 changing the script or any bootstrapped setting forces reconciliation.
-Production credentials and ACLs will be supplied by Ansible or the Kafka
-platform operator rather than this local bootstrap service.
+
+Static platform topics and service identities are supplied by Ansible or the
+Kafka platform operator in production. Dynamic per-provider topics, SCRAM
+users, and exact topic/group ACLs are created by Wurzburg's durable Provider
+Kafka worker through librdkafka's native Admin API. That worker authenticates
+with the dedicated least-privilege Provider Kafka admin identity provisioned by
+the infrastructure layer.
 
 ## Runtime And Migration Separation
 
@@ -94,7 +100,8 @@ so replicas cooperate correctly.
 Production application pods never create infrastructure and never mutate the
 Oracle schema. The deployment order is:
 
-1. DevOps provisions Oracle credentials, Kafka identities/topics/ACLs,
+1. DevOps provisions Oracle credentials, static Kafka service identities,
+   platform topics/ACLs, the Provider Kafka admin identity/ACLs,
    Dragonfly, TigerBeetle, MinIO, and OTel endpoints through the platform's
    secret and infrastructure automation.
 2. One Kubernetes Job runs `wurzburg-admin db migrate` using the exact Wurzburg
@@ -105,10 +112,12 @@ Oracle schema. The deployment order is:
 4. Readiness and liveness checks control traffic; they never run migrations.
 
 Running three or more Wurzburg pods therefore does not create a schema race.
-Kafka topics, SCRAM identities, and ACLs are not created by application pods or
-the Oracle migration Job. Production uses Ansible or a Kafka operator for those
-resources. The local `kafka-init` container is the executable development
-equivalent of that infrastructure contract.
+The Oracle migration Job never mutates Kafka. Application pods do not recreate
+static platform resources, but cooperating Provider Kafka workers may create or
+reconcile dynamic provider topics, SCRAM identities, and exact ACLs through
+leased Oracle jobs. Production Ansible/operator automation provisions the
+admin boundary; the local `kafka-init` container is its executable development
+equivalent.
 
 Database reset and Compose volume reset are non-production operator commands,
 never pod startup behavior. TigerBeetle format is likewise an infrastructure

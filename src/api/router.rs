@@ -4,7 +4,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::handlers::{card_policies, card_ranges, providers, system};
+use super::handlers::{card_policies, card_ranges, provider_events, providers, system};
 use crate::telemetry::http::trace_http_request;
 use crate::{api::cors::manual_cors_middleware, state::AppState};
 
@@ -15,6 +15,47 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
     let api_router = Router::new()
         .route("/providers", post(providers::create_provider))
         .route("/providers/{provider_id}", get(providers::get_provider))
+        .route(
+            "/providers/{provider_id}/kafka/credentials",
+            get(providers::get_provider_kafka_credentials),
+        )
+        .route(
+            "/providers/{provider_id}/kafka/status",
+            get(providers::get_provider_kafka_status),
+        )
+        .route(
+            "/providers/{provider_id}/kafka/provision",
+            post(providers::provision_provider_kafka),
+        )
+        .route(
+            "/providers/{provider_id}/kafka/rotate-credentials",
+            post(providers::rotate_provider_kafka_credentials),
+        )
+        .route(
+            "/providers/{provider_id}/kafka/suspend",
+            post(providers::suspend_provider_kafka),
+        )
+        .route(
+            "/providers/{provider_id}/kafka/resume",
+            post(providers::resume_provider_kafka),
+        )
+        .route(
+            "/providers/kafka/certificate",
+            get(providers::get_provider_kafka_certificate),
+        )
+        .route(
+            "/providers/{provider_id}/event-subscriptions",
+            get(provider_events::get_provider_event_subscriptions),
+        )
+        .route(
+            "/admin/provider-event-types",
+            get(provider_events::list_provider_event_types),
+        )
+        .route(
+            "/admin/providers/{provider_id}/event-subscriptions",
+            get(provider_events::get_admin_provider_event_subscriptions)
+                .put(provider_events::replace_provider_event_subscriptions),
+        )
         .route(
             "/providers/{provider_id}/card-range",
             axum::routing::put(providers::assign_provider_card_range),

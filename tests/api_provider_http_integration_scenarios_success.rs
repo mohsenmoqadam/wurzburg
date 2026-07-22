@@ -15,13 +15,14 @@ use wurzburg::{
 
 /// Scenario goal: create a Provider through the real HTTP/WSO2 boundary and
 /// prove the Oracle command, audit, idempotency replay, and all four live
-/// TigerBeetle account contracts. Kafka provisioning remains independently
-/// pending and is never represented as successful by this API.
+/// TigerBeetle account contracts. Kafka provisioning is disabled in this
+/// focused scenario and is covered by its dedicated real-broker scenario.
 #[tokio::test]
 async fn creates_and_replays_provider_with_four_verified_accounts() {
     if env::var("RUN_FULL_INTEGRATION_TESTS").ok().as_deref() != Some("1") {
         return;
     }
+    support::init_test_tracing();
 
     let settings = Settings::new().expect("integration settings should load");
     prepare_oracle_schema(&settings.database, &settings.migrations)
@@ -55,7 +56,7 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     let created: serde_json::Value = serde_json::from_str(&response_body).unwrap();
     assert_eq!(created["status"], "READY");
     assert_eq!(created["core_provisioning_status"], "SUCCEEDED");
-    assert_eq!(created["kafka_provisioning_status"], "PENDING");
+    assert_eq!(created["kafka_provisioning_status"], "DISABLED");
     let provider_id = Uuid::parse_str(created["provider_id"].as_str().unwrap()).unwrap();
 
     let (activate_status, activate_body) = post_json(

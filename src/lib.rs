@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod domain;
 pub mod kafka;
+pub mod security;
 pub mod services;
 pub mod state;
 pub mod telemetry;

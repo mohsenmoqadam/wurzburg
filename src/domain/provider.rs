@@ -196,6 +196,40 @@ pub struct NewProvider {
     pub metadata: serde_json::Value,
     pub contacts: Vec<ProviderContact>,
     pub operational_profile: ProviderOperationalProfile,
+    pub kafka_access: Option<NewProviderKafkaAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewProviderKafkaAccess {
+    pub provider_kafka_access_id: Uuid,
+    pub provider_kafka_credential_id: Uuid,
+    pub topic_name: String,
+    pub username: String,
+    pub consumer_group: String,
+    pub password_ciphertext: String,
+    pub encryption_key_version: String,
+    pub credential_version: u64,
+    pub security_protocol: String,
+    pub sasl_mechanism: String,
+    pub bootstrap_servers: Vec<String>,
+    pub security_cert: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewProviderKafkaCredential {
+    pub provider_kafka_credential_id: Uuid,
+    pub password_ciphertext: String,
+    pub encryption_key_version: String,
+    pub credential_version: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProviderKafkaProvisioningStatus {
+    Disabled,
+    Pending,
+    Succeeded,
+    Failed,
 }
 
 impl NewProvider {
@@ -277,6 +311,7 @@ pub struct Provider {
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub kafka_provisioning_status: ProviderKafkaProvisioningStatus,
 }
 
 impl Provider {
@@ -301,7 +336,7 @@ impl Provider {
             "status": self.status,
             "metadata": self.metadata,
             "core_provisioning_status": core_provisioning_status,
-            "kafka_provisioning_status": "PENDING",
+            "kafka_provisioning_status": self.kafka_provisioning_status,
             "created_at": self.created_at,
             "updated_at": self.updated_at
         })

@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::{
     api::{
-        auth::extract_trusted_actor,
-        command::MutationCommandContext,
+        auth::{extract_trusted_actor, require_scope},
+        command::{MutationCommandContext, trusted_audit_context},
         error::ApiError,
         idempotency::{canonical_request_hash, require_idempotency_key},
         request_context::extract_trusted_request_context,
@@ -25,7 +25,12 @@ use crate::{
         CreditGrantLimitMode, NewProvider, Provider, ProviderActiveWindow, ProviderContact,
         ProviderContactType, ProviderOperationalProfile, ProviderStatus, ProviderWeekday,
     },
-    services::provider::{CreateProviderOutcome, ProviderProvisioningDisposition, ProviderService},
+    services::{
+        provider::{CreateProviderOutcome, ProviderProvisioningDisposition, ProviderService},
+        provider_kafka::{
+            ProviderKafkaCommandResult, ProviderKafkaCredentialBundle, ProviderKafkaService,
+        },
+    },
     state::AppState,
 };
 
@@ -34,6 +39,16 @@ const ASSIGN_PROVIDER_RANGE_OPERATION: &str = "providers.assign_card_range";
 const ACTIVATE_PROVIDER_OPERATION: &str = "providers.activate";
 const SUSPEND_PROVIDER_OPERATION: &str = "providers.suspend";
 const DEACTIVATE_PROVIDER_OPERATION: &str = "providers.deactivate";
+const PROVISION_PROVIDER_KAFKA_OPERATION: &str = "providers.kafka.provision";
+const ROTATE_PROVIDER_KAFKA_OPERATION: &str = "providers.kafka.rotate";
+const SUSPEND_PROVIDER_KAFKA_OPERATION: &str = "providers.kafka.suspend";
+const RESUME_PROVIDER_KAFKA_OPERATION: &str = "providers.kafka.resume";
+
+#[derive(Clone, Copy)]
+struct ProviderKafkaCommandDefinition {
+    operation_type: &'static str,
+    action: crate::db::oracle::ProviderKafkaCommandAction,
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateProviderRequest {
@@ -192,7 +207,10 @@ pub enum ProviderCoreProvisioningStatusDto {
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProviderKafkaProvisioningStatusDto {
+    Disabled,
     Pending,
+    Succeeded,
+    Failed,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -213,6 +231,58 @@ pub struct ProviderCardRangeAssignmentResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ProviderLifecycleRequest {
     pub reason: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ProviderKafkaCredentialsResponse {
+    pub provider_id: Uuid,
+    pub topic: String,
+    pub brokers: Vec<String>,
+    pub security_protocol: String,
+    pub sasl_mechanism: String,
+    pub username: String,
+    pub consumer_group: String,
+    #[schema(value_type = String, format = Password)]
+    pub password: crate::security::provider_kafka_cipher::SecretBytes,
+    pub security_cert: Option<String>,
+    pub credential_version: u64,
+    pub credential_status: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ProviderKafkaStatusResponse {
+    pub provider_id: Uuid,
+    pub access_status: String,
+    pub active_credential_version: Option<u64>,
+    pub candidate_credential_version: Option<u64>,
+    pub latest_operation: Option<ProviderKafkaOperationStatusResponse>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ProviderKafkaOperationStatusResponse {
+    pub operation_id: Uuid,
+    pub operation_type: String,
+    pub status: String,
+    pub attempt_count: u32,
+    pub error_code: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ProviderKafkaCertificateResponse {
+    pub security_cert: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ProviderKafkaCommandRequest {
+    pub reason: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ProviderKafkaCommandResponse {
+    pub provider_id: Uuid,
+    pub operation_id: Uuid,
+    pub credential_status: String,
+    pub credential_version: Option<u64>,
 }
 
 #[utoipa::path(
@@ -259,6 +329,7 @@ pub async fn create_provider(
         state.db.clone(),
         state.tb_client.clone(),
         state.config.tigerbeetle.clone(),
+        state.provider_kafka_credentials.clone(),
     );
     match service.create_provider(&context, request.into()).await? {
         CreateProviderOutcome::Created {
@@ -289,9 +360,239 @@ pub async fn get_provider(
         state.db.clone(),
         state.tb_client.clone(),
         state.config.tigerbeetle.clone(),
+        state.provider_kafka_credentials.clone(),
     );
     let provider = service.get_provider(&actor, provider_id).await?;
     success_response(StatusCode::OK, ProviderResponse::new(provider))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/providers/{provider_id}/kafka/credentials",
+    tag = "Providers",
+    params(("provider_id" = Uuid, Path)),
+    responses(
+        (status = 200, body = ProviderKafkaCredentialsResponse),
+        (status = 401, body = crate::api::error::ApiErrorResponse),
+        (status = 403, body = crate::api::error::ApiErrorResponse),
+        (status = 404, body = crate::api::error::ApiErrorResponse),
+        (status = 409, body = crate::api::error::ApiErrorResponse)
+    ),
+    security(("wso2_backend_bearer" = []))
+)]
+#[tracing::instrument(skip(state, headers), fields(provider_id=%provider_id))]
+pub async fn get_provider_kafka_credentials(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let credentials = state
+        .provider_kafka_credentials
+        .clone()
+        .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderKafkaAccessNotFound))?;
+    let service = ProviderKafkaService::new(
+        state.db.clone(),
+        state.kafka_admin.clone(),
+        credentials,
+        state.config.provider_kafka.scram_iterations,
+    );
+    let response = service
+        .read_credentials(
+            &actor,
+            trusted_audit_context(&actor, &request_context),
+            provider_id,
+        )
+        .await?;
+    success_response(
+        StatusCode::OK,
+        ProviderKafkaCredentialsResponse::from(response),
+    )
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/providers/{provider_id}/kafka/status",
+    tag = "Providers",
+    params(("provider_id" = Uuid, Path)),
+    responses(
+        (status = 200, body = ProviderKafkaStatusResponse),
+        (status = 401, body = crate::api::error::ApiErrorResponse),
+        (status = 403, body = crate::api::error::ApiErrorResponse),
+        (status = 404, body = crate::api::error::ApiErrorResponse)
+    ),
+    security(("wso2_backend_bearer" = []))
+)]
+#[tracing::instrument(skip(state, headers), fields(provider_id=%provider_id))]
+pub async fn get_provider_kafka_status(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let credentials = state
+        .provider_kafka_credentials
+        .clone()
+        .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderKafkaAccessNotFound))?;
+    let service = ProviderKafkaService::new(
+        state.db.clone(),
+        state.kafka_admin.clone(),
+        credentials,
+        state.config.provider_kafka.scram_iterations,
+    );
+    let status = service.read_status(&actor, provider_id).await?;
+    success_response(StatusCode::OK, ProviderKafkaStatusResponse::from(status))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/providers/kafka/certificate",
+    tag = "Providers",
+    responses(
+        (status = 200, body = ProviderKafkaCertificateResponse),
+        (status = 401, body = crate::api::error::ApiErrorResponse),
+        (status = 403, body = crate::api::error::ApiErrorResponse),
+        (status = 404, body = crate::api::error::ApiErrorResponse)
+    ),
+    security(("wso2_backend_bearer" = []))
+)]
+#[tracing::instrument(skip(state, headers))]
+pub async fn get_provider_kafka_certificate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    require_scope(&actor, "provider.kafka_credentials:read")?;
+    let security_cert = state
+        .provider_kafka_credentials
+        .as_ref()
+        .and_then(|factory| factory.security_cert().map(ToString::to_string))
+        .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderKafkaAccessNotFound))?;
+    success_response(
+        StatusCode::OK,
+        ProviderKafkaCertificateResponse { security_cert },
+    )
+}
+
+macro_rules! provider_kafka_command_handler {
+    ($function:ident, $path:literal, $operation:expr, $action:expr) => {
+        #[utoipa::path(
+            post,
+            path = $path,
+            tag = "Providers",
+            request_body = ProviderKafkaCommandRequest,
+            params(("provider_id" = Uuid, Path), ("Idempotency-Key" = String, Header)),
+            responses(
+                (status = 202, body = ProviderKafkaCommandResponse),
+                (status = 200, description = "Idempotent response replay", body = serde_json::Value),
+                (status = 400, body = crate::api::error::ApiErrorResponse),
+                (status = 401, body = crate::api::error::ApiErrorResponse),
+                (status = 403, body = crate::api::error::ApiErrorResponse),
+                (status = 404, body = crate::api::error::ApiErrorResponse),
+                (status = 409, body = crate::api::error::ApiErrorResponse)
+            ),
+            security(("wso2_backend_bearer" = []))
+        )]
+        pub async fn $function(
+            state: State<Arc<AppState>>,
+            path: Path<Uuid>,
+            method: Method,
+            uri: OriginalUri,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> Result<Response, ApiError> {
+            command_provider_kafka(
+                state,
+                path,
+                method,
+                uri,
+                headers,
+                body,
+                ProviderKafkaCommandDefinition {
+                    operation_type: $operation,
+                    action: $action,
+                },
+            )
+            .await
+        }
+    };
+}
+
+provider_kafka_command_handler!(
+    provision_provider_kafka,
+    "/api/v1/providers/{provider_id}/kafka/provision",
+    PROVISION_PROVIDER_KAFKA_OPERATION,
+    crate::db::oracle::ProviderKafkaCommandAction::Provision
+);
+provider_kafka_command_handler!(
+    rotate_provider_kafka_credentials,
+    "/api/v1/providers/{provider_id}/kafka/rotate-credentials",
+    ROTATE_PROVIDER_KAFKA_OPERATION,
+    crate::db::oracle::ProviderKafkaCommandAction::Rotate
+);
+provider_kafka_command_handler!(
+    suspend_provider_kafka,
+    "/api/v1/providers/{provider_id}/kafka/suspend",
+    SUSPEND_PROVIDER_KAFKA_OPERATION,
+    crate::db::oracle::ProviderKafkaCommandAction::Suspend
+);
+provider_kafka_command_handler!(
+    resume_provider_kafka,
+    "/api/v1/providers/{provider_id}/kafka/resume",
+    RESUME_PROVIDER_KAFKA_OPERATION,
+    crate::db::oracle::ProviderKafkaCommandAction::Resume
+);
+
+async fn command_provider_kafka(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<Uuid>,
+    method: Method,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+    definition: ProviderKafkaCommandDefinition,
+) -> Result<Response, ApiError> {
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let idempotency_key = require_idempotency_key(&headers)?;
+    let request_hash = canonical_request_hash(&method, uri.path(), &body);
+    let request: ProviderKafkaCommandRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(WurzburgResultCode::InvalidProviderContract))?;
+    let context = MutationCommandContext {
+        operation_type: definition.operation_type.to_string(),
+        actor,
+        request: request_context,
+        idempotency_key,
+        request_hash,
+    };
+    let credentials = state
+        .provider_kafka_credentials
+        .clone()
+        .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderKafkaAccessNotFound))?;
+    let service = ProviderKafkaService::new(
+        state.db.clone(),
+        state.kafka_admin.clone(),
+        credentials,
+        state.config.provider_kafka.scram_iterations,
+    );
+    match service
+        .command_access(&context, provider_id, definition.action, request.reason)
+        .await?
+    {
+        ProviderKafkaCommandResult::Accepted(snapshot) => {
+            success_response(StatusCode::ACCEPTED, snapshot)
+        }
+        ProviderKafkaCommandResult::Replayed(snapshot) => {
+            success_response(StatusCode::OK, snapshot)
+        }
+    }
 }
 
 #[utoipa::path(put, path="/api/v1/providers/{provider_id}/card-range", tag="Providers", request_body=AssignProviderCardRangeRequest, params(("provider_id"=Uuid, Path), ("Idempotency-Key"=String, Header)), responses((status=202, body=ProviderCardRangeAssignmentResponse), (status=409, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
@@ -322,6 +623,7 @@ pub async fn assign_provider_card_range(
         state.db.clone(),
         state.tb_client.clone(),
         state.config.tigerbeetle.clone(),
+        state.provider_kafka_credentials.clone(),
     );
     match service
         .assign_card_range(&context, provider_id, request.card_range_id, request.reason)
@@ -443,6 +745,7 @@ async fn transition_provider(
         state.db.clone(),
         state.tb_client.clone(),
         state.config.tigerbeetle.clone(),
+        state.provider_kafka_credentials.clone(),
     );
     match service
         .transition_provider(&context, provider_id, transition.target, request.reason)
@@ -486,9 +789,62 @@ impl ProviderResponse {
             status: provider.status.into(),
             metadata: provider.metadata,
             core_provisioning_status,
-            kafka_provisioning_status: ProviderKafkaProvisioningStatusDto::Pending,
+            kafka_provisioning_status: match provider.kafka_provisioning_status {
+                crate::domain::provider::ProviderKafkaProvisioningStatus::Disabled => {
+                    ProviderKafkaProvisioningStatusDto::Disabled
+                }
+                crate::domain::provider::ProviderKafkaProvisioningStatus::Pending => {
+                    ProviderKafkaProvisioningStatusDto::Pending
+                }
+                crate::domain::provider::ProviderKafkaProvisioningStatus::Succeeded => {
+                    ProviderKafkaProvisioningStatusDto::Succeeded
+                }
+                crate::domain::provider::ProviderKafkaProvisioningStatus::Failed => {
+                    ProviderKafkaProvisioningStatusDto::Failed
+                }
+            },
             created_at: provider.created_at,
             updated_at: provider.updated_at,
+        }
+    }
+}
+
+impl From<ProviderKafkaCredentialBundle> for ProviderKafkaCredentialsResponse {
+    fn from(value: ProviderKafkaCredentialBundle) -> Self {
+        Self {
+            provider_id: value.provider_id,
+            topic: value.topic_name,
+            brokers: value.bootstrap_servers,
+            security_protocol: value.security_protocol,
+            sasl_mechanism: value.sasl_mechanism,
+            username: value.username,
+            consumer_group: value.consumer_group,
+            password: value.password,
+            security_cert: value.security_cert,
+            credential_version: value.credential_version,
+            credential_status: value.credential_status,
+        }
+    }
+}
+
+impl From<crate::services::provider_kafka::ProviderKafkaAccessStatus>
+    for ProviderKafkaStatusResponse
+{
+    fn from(value: crate::services::provider_kafka::ProviderKafkaAccessStatus) -> Self {
+        Self {
+            provider_id: value.provider_id,
+            access_status: value.access_status,
+            active_credential_version: value.active_credential_version,
+            candidate_credential_version: value.candidate_credential_version,
+            latest_operation: value.latest_operation.map(|operation| {
+                ProviderKafkaOperationStatusResponse {
+                    operation_id: operation.operation_id,
+                    operation_type: operation.operation_type,
+                    status: operation.status,
+                    attempt_count: operation.attempt_count,
+                    error_code: operation.error_code,
+                }
+            }),
         }
     }
 }
@@ -533,6 +889,7 @@ impl From<CreateProviderRequest> for NewProvider {
                 event_delivery_enabled: controls.event_delivery.enabled,
                 event_delivery_disabled_reason: controls.event_delivery.disabled_reason,
             },
+            kafka_access: None,
         }
     }
 }

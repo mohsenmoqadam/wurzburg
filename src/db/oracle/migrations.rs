@@ -29,6 +29,16 @@ impl OracleMigrator {
     pub async fn reset_schema(&self) -> DbResult<()> {
         self.pool
             .with_connection(|connection| {
+                // Non-production reset can race a recently completed API/test
+                // transaction. Oracle otherwise uses a zero-second DDL wait,
+                // making harmless transient TM locks fail the entire reset.
+                connection
+                    .execute("ALTER SESSION SET DDL_LOCK_TIMEOUT = 30", &[])
+                    .map_err(|error| {
+                        DbError::Query(format!(
+                            "failed to configure Oracle DDL lock timeout: {error}"
+                        ))
+                    })?;
                 for table_name in [
                     "runtime_materialization_receipts",
                     "card_policy_profiles",
@@ -36,6 +46,7 @@ impl OracleMigrator {
                     "card_ranges",
                     "provider_event_subscriptions",
                     "provider_provisioning_jobs",
+                    "provider_kafka_credentials",
                     "provider_kafka_access",
                     "provider_ledger_accounts",
                     "provider_operational_profiles",

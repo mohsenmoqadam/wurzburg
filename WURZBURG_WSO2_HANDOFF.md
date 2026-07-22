@@ -238,6 +238,7 @@ Card-range mutations                         platform.card_ranges:write
 Card-policy reads/mutations                  platform.policies:read/write
 Provider fee-profile reads/mutations         platform.fee_profiles:read/write
 Provider Kafka credential read               provider.kafka_credentials:read
+Provider Kafka access/job status              provider.kafka_credentials:read
 Provider Kafka provision/rotate/suspend      provider.kafka_credentials:rotate
 Provider user/card reads                     provider.users:read/provider.cards:read
 Provider user onboarding/card replacement    provider.users:write/provider.cards:write

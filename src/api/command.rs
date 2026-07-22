@@ -18,16 +18,7 @@ pub struct MutationCommandContext {
 
 impl MutationCommandContext {
     pub fn audit_context(&self) -> TrustedAuditContext {
-        TrustedAuditContext {
-            actor_subject: self.actor.subject.clone(),
-            actor_client_id: Some(self.actor.client_id.clone()),
-            actor_provider_id: self.actor.provider_id,
-            actor_user_id: self.actor.user_id,
-            actor_issuer: Some(self.actor.issuer.clone()),
-            source_ip: Some(self.request.client_ip),
-            correlation_id: self.request.correlation_id.clone(),
-            request_id: self.request.request_id.to_string(),
-        }
+        trusted_audit_context(&self.actor, &self.request)
     }
 
     pub fn new_idempotency_record(&self) -> NewIdempotencyRecord {
@@ -43,5 +34,21 @@ impl MutationCommandContext {
             correlation_id: self.request.correlation_id.clone(),
             request_id: self.request.request_id.to_string(),
         }
+    }
+}
+
+pub fn trusted_audit_context(
+    actor: &TrustedActor,
+    request: &TrustedRequestContext,
+) -> TrustedAuditContext {
+    TrustedAuditContext {
+        actor_subject: actor.subject.clone(),
+        actor_client_id: Some(actor.client_id.clone()),
+        actor_provider_id: actor.provider_id,
+        actor_user_id: actor.user_id,
+        actor_issuer: Some(actor.issuer.clone()),
+        source_ip: Some(request.client_ip),
+        correlation_id: request.correlation_id.clone(),
+        request_id: request.request_id.to_string(),
     }
 }

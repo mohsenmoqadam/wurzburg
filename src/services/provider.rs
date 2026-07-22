@@ -13,6 +13,7 @@ use crate::{
     config::TigerBeetleConfig,
     db::oracle::{CreateProviderPersistenceOutcome, OracleRepository},
     domain::provider::{NewProvider, Provider},
+    security::provider_kafka_cipher::ProviderKafkaCredentialFactory,
     tigerbeetle::{AppAccount, AppTbClient, TigerBeetleError},
 };
 
@@ -36,6 +37,7 @@ pub struct ProviderService {
     repository: Arc<OracleRepository>,
     tb_client: AppTbClient,
     tb_config: TigerBeetleConfig,
+    kafka_credentials: Option<Arc<ProviderKafkaCredentialFactory>>,
 }
 
 impl ProviderService {
@@ -43,11 +45,13 @@ impl ProviderService {
         repository: Arc<OracleRepository>,
         tb_client: AppTbClient,
         tb_config: TigerBeetleConfig,
+        kafka_credentials: Option<Arc<ProviderKafkaCredentialFactory>>,
     ) -> Self {
         Self {
             repository,
             tb_client,
             tb_config,
+            kafka_credentials,
         }
     }
 
@@ -58,9 +62,19 @@ impl ProviderService {
         provider: NewProvider,
     ) -> Result<CreateProviderOutcome, ApiError> {
         require_scope(&context.actor, "platform.providers:write")?;
-        let provider = provider.validate_and_normalize().map_err(|message| {
+        let mut provider = provider.validate_and_normalize().map_err(|message| {
             ApiError::with_message(WurzburgResultCode::InvalidProviderContract, message)
         })?;
+        if let Some(factory) = &self.kafka_credentials {
+            provider.kafka_access =
+                Some(factory.prepare(provider.provider_id).map_err(|error| {
+                    tracing::error!(
+                        error.kind = error.diagnostic_kind(),
+                        "failed to prepare encrypted Provider Kafka credentials"
+                    );
+                    ApiError::new(WurzburgResultCode::SystemError)
+                })?);
+        }
 
         let outcome = self
             .repository

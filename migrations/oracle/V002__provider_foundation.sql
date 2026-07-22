@@ -118,8 +118,6 @@ CREATE TABLE provider_kafka_access (
     topic_name VARCHAR2(255) NOT NULL UNIQUE,
     username VARCHAR2(255) NOT NULL UNIQUE,
     consumer_group VARCHAR2(255) NOT NULL UNIQUE,
-    password_ciphertext VARCHAR2(4000) NOT NULL,
-    encryption_key_version VARCHAR2(128) NOT NULL,
     security_protocol VARCHAR2(64) NOT NULL,
     sasl_mechanism VARCHAR2(64) NOT NULL,
     bootstrap_servers_json JSON NOT NULL,
@@ -132,9 +130,49 @@ CREATE TABLE provider_kafka_access (
     CONSTRAINT fk_pka_provider
         FOREIGN KEY (provider_id) REFERENCES providers(provider_id),
     CONSTRAINT ck_pka_status CHECK (
-        credential_status IN ('PROVISIONING', 'ACTIVE', 'ROTATING', 'SUSPENDED', 'REVOKED', 'FAILED')
+        credential_status IN (
+            'PROVISIONING', 'ACTIVE', 'ROTATING', 'SUSPENDING',
+            'SUSPENDED', 'RESUMING', 'REVOKED', 'FAILED'
+        )
     )
 );
+
+CREATE TABLE provider_kafka_credentials (
+    provider_kafka_credential_id RAW(16) PRIMARY KEY,
+    provider_kafka_access_id RAW(16) NOT NULL,
+    provider_id RAW(16) NOT NULL,
+    credential_version NUMBER(19,0) NOT NULL,
+    password_ciphertext VARCHAR2(4000) NOT NULL,
+    encryption_key_version VARCHAR2(128) NOT NULL,
+    status VARCHAR2(32) DEFAULT 'CANDIDATE' NOT NULL,
+    activated_at TIMESTAMP(6) WITH TIME ZONE,
+    superseded_at TIMESTAMP(6) WITH TIME ZONE,
+    revoked_at TIMESTAMP(6) WITH TIME ZONE,
+    created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT fk_pkc_access
+        FOREIGN KEY (provider_kafka_access_id)
+        REFERENCES provider_kafka_access(provider_kafka_access_id),
+    CONSTRAINT fk_pkc_provider
+        FOREIGN KEY (provider_id) REFERENCES providers(provider_id),
+    CONSTRAINT uq_pkc_provider_version UNIQUE (provider_id, credential_version),
+    CONSTRAINT ck_pkc_status CHECK (
+        status IN ('CANDIDATE', 'ACTIVE', 'SUPERSEDED', 'REVOKED', 'FAILED')
+    )
+);
+
+CREATE UNIQUE INDEX uq_pkc_one_active
+    ON provider_kafka_credentials (
+        CASE WHEN status = 'ACTIVE' THEN provider_id END
+    );
+
+CREATE UNIQUE INDEX uq_pkc_one_candidate
+    ON provider_kafka_credentials (
+        CASE WHEN status = 'CANDIDATE' THEN provider_id END
+    );
+
+CREATE INDEX idx_pkc_access_history
+    ON provider_kafka_credentials(provider_kafka_access_id, credential_version);
 
 CREATE TABLE provider_provisioning_jobs (
     provider_provisioning_job_id RAW(16) PRIMARY KEY,
@@ -154,9 +192,11 @@ CREATE TABLE provider_provisioning_jobs (
     completed_at TIMESTAMP(6) WITH TIME ZONE,
     CONSTRAINT fk_ppj_provider
         FOREIGN KEY (provider_id) REFERENCES providers(provider_id),
-    CONSTRAINT uq_ppj_provider_type UNIQUE (provider_id, job_type),
     CONSTRAINT ck_ppj_type CHECK (
-        job_type IN ('TIGERBEETLE_PROVISION', 'KAFKA_PROVISION', 'KAFKA_ROTATE')
+        job_type IN (
+            'TIGERBEETLE_PROVISION', 'KAFKA_PROVISION', 'KAFKA_ROTATE',
+            'KAFKA_SUSPEND', 'KAFKA_RESUME'
+        )
     ),
     CONSTRAINT ck_ppj_status CHECK (
         status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED')
@@ -165,6 +205,12 @@ CREATE TABLE provider_provisioning_jobs (
 
 CREATE INDEX idx_ppj_claim
     ON provider_provisioning_jobs(status, next_attempt_at, locked_until);
+
+CREATE UNIQUE INDEX uq_ppj_one_live_provider_type
+    ON provider_provisioning_jobs (
+        CASE WHEN status IN ('PENDING', 'RUNNING') THEN provider_id END,
+        CASE WHEN status IN ('PENDING', 'RUNNING') THEN job_type END
+    );
 
 CREATE TABLE provider_event_subscriptions (
     provider_event_subscription_id RAW(16) PRIMARY KEY,

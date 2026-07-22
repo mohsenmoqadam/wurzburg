@@ -3416,6 +3416,7 @@ dependencies = [
  "redis-macros",
  "regex",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

@@ -4,7 +4,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use super::handlers::{card_policies, card_ranges, providers, system};
+use super::handlers::{card_policies, card_ranges, provider_events, providers, system};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -12,6 +12,17 @@ use super::handlers::{card_policies, card_ranges, providers, system};
     paths(
             providers::create_provider,
             providers::get_provider,
+            providers::get_provider_kafka_credentials,
+            providers::get_provider_kafka_status,
+            providers::get_provider_kafka_certificate,
+            providers::provision_provider_kafka,
+            providers::rotate_provider_kafka_credentials,
+            providers::suspend_provider_kafka,
+            providers::resume_provider_kafka,
+            provider_events::list_provider_event_types,
+            provider_events::get_admin_provider_event_subscriptions,
+            provider_events::get_provider_event_subscriptions,
+            provider_events::replace_provider_event_subscriptions,
             providers::assign_provider_card_range,
             providers::activate_provider,
             providers::suspend_provider,
@@ -53,6 +64,19 @@ use super::handlers::{card_policies, card_ranges, providers, system};
             providers::AssignProviderCardRangeRequest,
             providers::ProviderCardRangeAssignmentResponse,
             providers::ProviderLifecycleRequest,
+            providers::ProviderKafkaCredentialsResponse,
+            providers::ProviderKafkaStatusResponse,
+            providers::ProviderKafkaOperationStatusResponse,
+            providers::ProviderKafkaCertificateResponse,
+            providers::ProviderKafkaCommandRequest,
+            providers::ProviderKafkaCommandResponse,
+            provider_events::ProviderEventTypeDto,
+            provider_events::ProviderEventTypeCatalogResponse,
+            provider_events::ProviderEventTypeCatalogItem,
+            provider_events::ReplaceProviderEventSubscriptionsRequest,
+            provider_events::ProviderEventSubscriptionInput,
+            provider_events::ProviderEventSubscriptionsResponse,
+            provider_events::ProviderEventSubscriptionResponse,
             card_ranges::CreateCardRangeRequest,
             card_ranges::CardRangeResponse,
             card_ranges::ListCardRangesQuery,
@@ -88,6 +112,7 @@ use super::handlers::{card_policies, card_ranges, providers, system};
     ),
     tags(
         (name = "Providers", description = "Platform-admin provider lifecycle and provisioning APIs"),
+        (name = "Provider Events", description = "Provider event catalog and delivery subscription controls"),
         (name = "Card Ranges", description = "Platform-admin card range control APIs"),
         (name = "Card Policies", description = "Platform-admin range policy APIs"),
         (name = "Operations", description = "Durable integration operation status APIs"),

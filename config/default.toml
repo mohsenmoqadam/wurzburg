@@ -92,6 +92,8 @@ auto_offset_reset = "earliest"
 request_timeout_ms = 5000
 partitions = 1
 replication_factor = 1
+sasl_username = "wurzburg_provider_admin"
+sasl_password = "wurzburg_provider_admin_password"
 
 [tigerbeetle]
 cluster_id = 0
@@ -119,6 +121,19 @@ lease_duration_ms = 30000
 max_attempts = 20
 initial_backoff_ms = 500
 max_backoff_ms = 60000
+
+[provider_kafka]
+enabled = false
+worker_id = "wurzburg-provider-kafka-provisioning"
+batch_size = 10
+poll_interval_ms = 500
+lease_duration_ms = 45000
+max_attempts = 20
+initial_backoff_ms = 500
+max_backoff_ms = 60000
+master_key_environment_variable = "WURZBURG_PROVIDER_KAFKA_MASTER_KEY_HEX"
+encryption_key_version = "v1"
+scram_iterations = 8192
 
 [telemetry]
 enabled = true

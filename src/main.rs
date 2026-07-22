@@ -8,7 +8,9 @@ use wurzburg::{
     db::oracle::verify_oracle_schema,
     kafka::{outbox_relay::start_outbox_relay, receipt_consumer::start_receipt_consumer},
     services::{
-        provider::ProviderService, provider_provisioning::start_provider_provisioning_worker,
+        provider::ProviderService,
+        provider_kafka::{ProviderKafkaService, start_provider_kafka_provisioning_worker},
+        provider_provisioning::start_provider_provisioning_worker,
     },
     state::AppState,
     telemetry,
@@ -42,9 +44,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_state.db.clone(),
             app_state.tb_client.clone(),
             settings.tigerbeetle.clone(),
+            app_state.provider_kafka_credentials.clone(),
         ),
         settings.provider_provisioning.clone(),
     );
+    let provider_kafka_provisioning = match app_state.provider_kafka_credentials.clone() {
+        Some(credentials) => start_provider_kafka_provisioning_worker(
+            app_state.db.clone(),
+            ProviderKafkaService::new(
+                app_state.db.clone(),
+                app_state.kafka_admin.clone(),
+                credentials,
+                settings.provider_kafka.scram_iterations,
+            ),
+            settings.provider_kafka.clone(),
+        ),
+        None => None,
+    };
 
     // 5. Build main API router
     let app = build_app_router(app_state.clone());
@@ -85,6 +101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(provider_provisioning) = provider_provisioning {
         provider_provisioning.shutdown().await;
+    }
+    if let Some(provider_kafka_provisioning) = provider_kafka_provisioning {
+        provider_kafka_provisioning.shutdown().await;
     }
     server_result?;
 

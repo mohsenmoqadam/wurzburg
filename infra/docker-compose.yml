@@ -101,6 +101,8 @@ services:
       KAFKA_BOOTSTRAP_SERVER: kafka:29092
       WURZBURG_KAFKA_USERNAME: producer_user
       WURZBURG_KAFKA_PASSWORD: producer_password
+      WURZBURG_KAFKA_ADMIN_USERNAME: wurzburg_provider_admin
+      WURZBURG_KAFKA_ADMIN_PASSWORD: wurzburg_provider_admin_password
       WOLFSBURG_KAFKA_USERNAME: wolfsburg_user
       WOLFSBURG_KAFKA_PASSWORD: wolfsburg_password
       WURZBURG_COMMAND_TOPIC: wurzburg.runtime-projection.commands.v1

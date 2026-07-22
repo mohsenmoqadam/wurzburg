@@ -18,6 +18,7 @@ pub struct Settings {
     pub validation: ValidationConfig,
     pub tigerbeetle: TigerBeetleConfig,
     pub provider_provisioning: ProviderProvisioningConfig,
+    pub provider_kafka: ProviderKafkaConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -152,6 +153,8 @@ pub struct KafkaAdminConfig {
     pub request_timeout_ms: u64,
     pub partitions: u32,
     pub replication_factor: u32,
+    pub sasl_username: Option<String>,
+    pub sasl_password: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -203,6 +206,27 @@ pub struct ProviderProvisioningConfig {
     pub max_attempts: u32,
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProviderKafkaConfig {
+    pub enabled: bool,
+    pub worker_id: String,
+    pub batch_size: u16,
+    pub poll_interval_ms: u64,
+    pub lease_duration_ms: u64,
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+    pub master_key_environment_variable: String,
+    pub encryption_key_version: String,
+    pub scram_iterations: i32,
+}
+
+impl ProviderKafkaConfig {
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms)
+    }
 }
 
 impl ProviderProvisioningConfig {
@@ -257,6 +281,50 @@ impl Settings {
             .try_deserialize()
             .context("Failed to deserialize configuration")?;
         settings.kafka.validate()?;
+        if settings.provider_kafka.enabled {
+            anyhow::ensure!(
+                !settings
+                    .provider_kafka
+                    .master_key_environment_variable
+                    .trim()
+                    .is_empty(),
+                "Provider Kafka master-key environment variable is required"
+            );
+            anyhow::ensure!(
+                !settings
+                    .provider_kafka
+                    .encryption_key_version
+                    .trim()
+                    .is_empty(),
+                "Provider Kafka encryption key version is required"
+            );
+            anyhow::ensure!(
+                settings.provider_kafka.scram_iterations >= 4096,
+                "Provider Kafka SCRAM iterations must be at least 4096"
+            );
+            anyhow::ensure!(
+                settings
+                    .kafka
+                    .admin
+                    .sasl_username
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "Provider Kafka administration username is required"
+            );
+            anyhow::ensure!(
+                settings
+                    .kafka
+                    .admin
+                    .sasl_password
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty()),
+                "Provider Kafka administration password is required"
+            );
+            anyhow::ensure!(
+                settings.provider_kafka.max_attempts > 0,
+                "Provider Kafka max attempts must be positive"
+            );
+        }
         Ok(settings)
     }
 

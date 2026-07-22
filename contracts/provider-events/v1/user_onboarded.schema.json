@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.wurzburg/provider-events/v1/user_onboarded.schema.json",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    { "properties": { "event_type": { "const": "USER_ONBOARDED" }, "data": { "type": "object", "additionalProperties": false, "required": ["link_status"], "properties": { "link_status": { "type": "string" }, "identity_name_mismatch": { "type": "boolean" } } } } }
+  ]
+}

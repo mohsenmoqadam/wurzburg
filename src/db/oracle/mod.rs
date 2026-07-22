@@ -10,6 +10,8 @@ pub mod operation;
 pub mod outbox;
 pub mod pool;
 pub mod provider;
+pub mod provider_event_subscription;
+pub mod provider_kafka;
 pub mod provider_lifecycle;
 pub mod provider_provisioning;
 pub mod provider_range;
@@ -35,6 +37,15 @@ pub use operation::{IntegrationOperationStatus, IntegrationOperationView};
 pub use outbox::ClaimedOutboxEvent;
 pub use pool::{OracleConnectConfig, OraclePool};
 pub use provider::{CreateProviderPersistenceOutcome, ProviderLedgerAccountMapping};
+pub use provider_event_subscription::{
+    ProviderEventSubscriptionRecord, ProviderEventSubscriptionSet,
+    ProviderEventSubscriptionUpdateOutcome,
+};
+pub use provider_kafka::{
+    ClaimedProviderKafkaJob, ProviderKafkaAccessRecord, ProviderKafkaCommandAction,
+    ProviderKafkaCommandOutcome, ProviderKafkaCredentialReadOutcome, ProviderKafkaJobStatusRecord,
+    ProviderKafkaJobType, ProviderKafkaRetryDecision, ProviderKafkaStatusRecord,
+};
 pub use provider_lifecycle::ProviderLifecycleOutcome;
 pub use provider_provisioning::ClaimedProviderProvisioningJob;
 pub use provider_range::{ProviderRangeAssignmentOutcome, ProviderRangeAssignmentResult};

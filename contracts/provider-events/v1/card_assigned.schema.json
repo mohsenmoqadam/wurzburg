@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.wurzburg/provider-events/v1/card_assigned.schema.json",
+  "allOf": [
+    { "$ref": "envelope.schema.json" },
+    { "properties": { "event_type": { "const": "CARD_ASSIGNED" }, "data": { "type": "object", "additionalProperties": false, "required": ["assignment_type"], "properties": { "assignment_type": { "enum": ["NEW", "EXISTING_MULTI_PROVIDER"] } } } } }
+  ]
+}

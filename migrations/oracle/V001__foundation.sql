@@ -196,3 +196,23 @@ CREATE INDEX idx_operation_wal_lease ON operation_wal(status, next_attempt_at, l
 CREATE INDEX idx_outbox_lease ON integration_outbox(status, next_attempt_at, locked_until);
 CREATE INDEX idx_inbox_aggregate ON integration_inbox(aggregate_type, aggregate_id);
 CREATE INDEX idx_kafka_poison_received ON kafka_poison_messages(received_at);
+
+INSERT INTO business_config (
+    config_key,
+    value_json,
+    value_type,
+    version,
+    status,
+    effective_at,
+    updated_by_subject,
+    description
+) VALUES (
+    'provider_event_delivery.global_enabled',
+    '{"enabled":true}',
+    'BOOLEAN',
+    1,
+    'ACTIVE',
+    SYSTIMESTAMP,
+    'wurzburg-migration',
+    'Global emergency gate for provider-facing Kafka events'
+);

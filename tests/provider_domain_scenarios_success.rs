@@ -11,6 +11,7 @@ use wurzburg::domain::provider::{
 fn validates_provider_identity_and_deterministic_account_set() {
     let provider_id = Uuid::new_v4();
     let provider = NewProvider {
+        kafka_access: None,
         provider_id,
         legal_name: "  Legal Provider ۱۲۳ ".to_string(),
         trade_name: "Provider Brand".to_string(),

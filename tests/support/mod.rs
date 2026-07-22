@@ -2,6 +2,17 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Deserialize, Serialize};
 use wurzburg::config::{BackendTokenTransport, Wso2Config};
 
+#[allow(dead_code)]
+pub fn init_test_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
 const TEST_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCbe4RwqsWKiGya
 wy8YgSYy8x4ZJ1nQLPvezVtbEWb07m3Q1TnFYCw+rriVepxDfNSQsySLIUSYyoOq
@@ -51,6 +62,7 @@ pub struct TestJwtOptions {
     pub client_id: Option<String>,
     pub exp: usize,
     pub nbf: usize,
+    pub provider_id: Option<uuid::Uuid>,
 }
 
 impl Default for TestJwtOptions {
@@ -63,6 +75,7 @@ impl Default for TestJwtOptions {
             client_id: None,
             exp: 2_000_000_000,
             nbf: 1_600_000_000,
+            provider_id: None,
         }
     }
 }
@@ -80,6 +93,7 @@ struct TestJwtClaims {
     jti: String,
     roles: Vec<String>,
     scope: Vec<String>,
+    provider_id: Option<uuid::Uuid>,
 }
 
 #[allow(dead_code)]
@@ -98,6 +112,17 @@ pub fn test_wso2_config() -> Wso2Config {
 #[allow(dead_code)]
 pub fn signed_platform_admin_jwt() -> String {
     signed_test_jwt(TestJwtOptions::default(), Algorithm::RS256)
+}
+
+#[allow(dead_code)]
+pub fn signed_provider_admin_jwt(provider_id: uuid::Uuid) -> String {
+    signed_test_jwt(
+        TestJwtOptions {
+            provider_id: Some(provider_id),
+            ..TestJwtOptions::default()
+        },
+        Algorithm::RS256,
+    )
 }
 
 #[allow(dead_code)]
@@ -132,7 +157,13 @@ pub fn signed_test_jwt(options: TestJwtOptions, algorithm: Algorithm) -> String 
             "platform.policies:read".to_string(),
             "platform.providers:write".to_string(),
             "platform.providers:read".to_string(),
+            "provider.kafka_credentials:read".to_string(),
+            "provider.kafka_credentials:rotate".to_string(),
+            "provider.events:read".to_string(),
+            "platform.provider_events:read".to_string(),
+            "platform.provider_events:write".to_string(),
         ],
+        provider_id: options.provider_id,
     };
 
     encode(
@@ -158,6 +189,7 @@ pub fn signed_hs256_confusion_jwt() -> String {
         jti: uuid::Uuid::new_v4().to_string(),
         roles: vec!["wurzburg_platform_admin".to_string()],
         scope: vec!["platform.card_ranges:read".to_string()],
+        provider_id: options.provider_id,
     };
 
     encode(

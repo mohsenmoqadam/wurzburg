@@ -7,6 +7,7 @@ use crate::db::oracle::{
     OracleConnectConfig, OracleHealthRepository, OraclePool, OracleRepository,
 };
 use crate::kafka::{AppKafkaAdmin, AppKafkaProducer};
+use crate::security::provider_kafka_cipher::ProviderKafkaCredentialFactory;
 use crate::tigerbeetle::{AppTbClient, start_tb_worker};
 
 #[derive(Clone)]
@@ -18,6 +19,7 @@ pub struct AppState {
     pub kafka_producer: AppKafkaProducer,
     pub kafka_admin: AppKafkaAdmin,
     pub tb_client: AppTbClient,
+    pub provider_kafka_credentials: Option<Arc<ProviderKafkaCredentialFactory>>,
 }
 
 impl AppState {
@@ -45,6 +47,20 @@ impl AppState {
         // 3. Setup Kafka Clients
         let kafka_producer = AppKafkaProducer::new(&config.kafka)?;
         let kafka_admin = AppKafkaAdmin::new(&config.kafka)?;
+        let provider_kafka_credentials = config
+            .provider_kafka
+            .enabled
+            .then(|| {
+                ProviderKafkaCredentialFactory::from_config(&config.kafka, &config.provider_kafka)
+            })
+            .transpose()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to initialize Provider Kafka credential encryption: {}",
+                    error.diagnostic_kind()
+                )
+            })?
+            .map(Arc::new);
 
         // 4. Setup TigerBeetle Client & Background Worker
         let (tb_client, tb_receiver) = AppTbClient::new(&config)?;
@@ -63,6 +79,7 @@ impl AppState {
             kafka_producer,
             kafka_admin,
             tb_client,
+            provider_kafka_credentials,
         })
     }
 }
