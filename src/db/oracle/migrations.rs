@@ -34,6 +34,12 @@ impl OracleMigrator {
                     "card_policy_profiles",
                     "card_range_providers",
                     "card_ranges",
+                    "provider_event_subscriptions",
+                    "provider_provisioning_jobs",
+                    "provider_kafka_access",
+                    "provider_ledger_accounts",
+                    "provider_operational_profiles",
+                    "provider_contacts",
                     "providers",
                     "kafka_poison_messages",
                     "integration_inbox",
@@ -231,7 +237,9 @@ pub async fn verify_oracle_schema(
 
 pub fn wurzburg_migrations() -> Vec<OracleMigration> {
     let v001_sql = include_str!("../../../migrations/oracle/V001__foundation.sql");
-    let v002_sql = include_str!("../../../migrations/oracle/V002__card_foundation.sql");
+    let v002_sql = include_str!("../../../migrations/oracle/V002__provider_foundation.sql");
+    let v003_sql =
+        include_str!("../../../migrations/oracle/V003__card_range_policy_foundation.sql");
 
     vec![
         OracleMigration {
@@ -243,10 +251,17 @@ pub fn wurzburg_migrations() -> Vec<OracleMigration> {
         },
         OracleMigration {
             version: "V002",
-            description: "card_foundation",
+            description: "provider_foundation",
             checksum: sql_checksum(v002_sql),
             legacy_checksum: None,
             sql: v002_sql,
+        },
+        OracleMigration {
+            version: "V003",
+            description: "card_range_policy_foundation",
+            checksum: sql_checksum(v003_sql),
+            legacy_checksum: None,
+            sql: v003_sql,
         },
     ]
 }
@@ -316,19 +331,52 @@ mod tests {
     }
 
     #[test]
-    fn wurzburg_migrations_include_card_foundation_after_base_foundation() {
+    fn wurzburg_migrations_follow_final_dependency_order() {
         let migrations = wurzburg_migrations();
 
         assert_eq!(migrations[0].version, "V001");
         assert_eq!(migrations[1].version, "V002");
-        assert_eq!(migrations[1].description, "card_foundation");
+        assert_eq!(migrations[1].description, "provider_foundation");
+        assert_eq!(migrations[2].version, "V003");
+        assert_eq!(migrations[2].description, "card_range_policy_foundation");
+    }
+
+    #[test]
+    fn provider_foundation_contains_final_core_resources() {
+        let migration = wurzburg_migrations()
+            .into_iter()
+            .find(|migration| migration.version == "V002")
+            .expect("provider foundation migration should exist");
+
+        assert!(migration.sql.contains("CREATE TABLE providers"));
+        assert!(!migration.sql.contains("'DRAFT'"));
+        assert!(migration.sql.contains("CREATE TABLE provider_contacts"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE provider_operational_profiles")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE provider_ledger_accounts")
+        );
+        assert!(migration.sql.contains("PROVIDER_OWNED"));
+        assert!(migration.sql.contains("PROVIDER_FEE"));
+        assert!(migration.sql.contains("CMS_SETTLEMENT"));
+        assert!(migration.sql.contains("PLATFORM_FEE"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE provider_provisioning_jobs")
+        );
     }
 
     #[test]
     fn card_foundation_migration_contains_required_constraints() {
         let migration = wurzburg_migrations()
             .into_iter()
-            .find(|migration| migration.version == "V002")
+            .find(|migration| migration.version == "V003")
             .expect("card foundation migration should exist");
 
         assert!(migration.sql.contains("CREATE TABLE card_ranges"));

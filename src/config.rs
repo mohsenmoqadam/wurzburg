@@ -17,6 +17,7 @@ pub struct Settings {
     pub kafka: KafkaConfig,
     pub validation: ValidationConfig,
     pub tigerbeetle: TigerBeetleConfig,
+    pub provider_provisioning: ProviderProvisioningConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -181,19 +182,56 @@ pub struct TigerBeetleConfig {
     pub batch_max_size: usize,
     pub batch_timeout_ms: u64,
     pub channel_capacity: usize,
+    pub operation_timeout_ms: u64,
     pub ledger_id: u32,
-    pub provider_account_code: u16,
+    pub provider_owned_account_code: u16,
+    pub provider_fee_account_code: u16,
+    pub cms_settlement_account_code: u16,
+    pub platform_fee_account_code: u16,
     pub user_account_code: u16,
     pub system_account_code: u16,
     pub transfer_code: u16,
-    pub platform_fee_account_id: String,
-    pub cms_settlement_account_id: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProviderProvisioningConfig {
+    pub enabled: bool,
+    pub worker_id: String,
+    pub batch_size: u16,
+    pub poll_interval_ms: u64,
+    pub lease_duration_ms: u64,
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+impl ProviderProvisioningConfig {
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms)
+    }
 }
 
 // --- Implementations ---
 impl TigerBeetleConfig {
     pub fn batch_timeout(&self) -> Duration {
         Duration::from_millis(self.batch_timeout_ms)
+    }
+
+    pub fn operation_timeout(&self) -> Duration {
+        Duration::from_millis(self.operation_timeout_ms)
+    }
+
+    pub fn provider_account_code(
+        &self,
+        category: crate::domain::provider::ProviderAccountCategory,
+    ) -> u16 {
+        use crate::domain::provider::ProviderAccountCategory;
+        match category {
+            ProviderAccountCategory::ProviderOwned => self.provider_owned_account_code,
+            ProviderAccountCategory::ProviderFee => self.provider_fee_account_code,
+            ProviderAccountCategory::CmsSettlement => self.cms_settlement_account_code,
+            ProviderAccountCategory::PlatformFee => self.platform_fee_account_code,
+        }
     }
 }
 

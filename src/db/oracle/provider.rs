@@ -1,0 +1,366 @@
+use chrono::{DateTime, Utc};
+use oracle::Row;
+use uuid::Uuid;
+
+use crate::{
+    api::command::MutationCommandContext,
+    db::{
+        error::{DbError, DbResult},
+        oracle::{
+            OracleRepository,
+            audit::insert_audit_log,
+            idempotency::{
+                complete_idempotency_record, fetch_idempotency_record, insert_idempotency_record,
+            },
+            types::{raw16_to_uuid, uuid_to_raw16},
+        },
+    },
+    domain::{
+        audit::{AuditAction, NewAuditLog, TrustedAuditContext},
+        idempotency::IdempotencyStatus,
+        provider::{NewProvider, Provider, ProviderAccountCategory, ProviderStatus},
+    },
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateProviderPersistenceOutcome {
+    Created(Box<Provider>),
+    Replayed(serde_json::Value),
+    IdempotencyConflict,
+    IdempotencyInProgress,
+    IdempotencyInvalidState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderLedgerAccountMapping {
+    pub category: ProviderAccountCategory,
+    pub tigerbeetle_account_id: Uuid,
+}
+
+impl OracleRepository {
+    #[tracing::instrument(skip(self, context, provider), fields(db.system="oracle", db.operation.name="providers.create"))]
+    pub async fn create_provider_atomic(
+        &self,
+        context: MutationCommandContext,
+        provider: NewProvider,
+    ) -> DbResult<CreateProviderPersistenceOutcome> {
+        let operation_type = context.operation_type.clone();
+        let idempotency_key = context.idempotency_key.as_str().to_string();
+        let request_hash = context.request_hash.clone();
+
+        self.pool
+            .with_transaction("atomic provider creation", move |connection| {
+                if let Some(existing) =
+                    fetch_idempotency_record(connection, &operation_type, &idempotency_key)?
+                {
+                    return classify_idempotency(&existing, &request_hash);
+                }
+
+                insert_idempotency_record(connection, context.new_idempotency_record())?;
+                insert_provider(connection, &provider, &context.actor.subject)?;
+                insert_contacts(connection, &provider, &context.actor.subject)?;
+                insert_operational_profile(connection, &provider, &context.actor.subject)?;
+                insert_ledger_mappings(connection, provider.provider_id)?;
+                insert_provisioning_jobs(connection, provider.provider_id)?;
+
+                let created = fetch_provider(connection, provider.provider_id)?;
+                let snapshot = created.replay_snapshot();
+                insert_audit_log(
+                    connection,
+                    NewAuditLog {
+                        audit_log_id: Uuid::new_v4(),
+                        entity_type: "PROVIDER".to_string(),
+                        entity_id: provider.provider_id,
+                        action_type: AuditAction::Insert,
+                        reason: Some(
+                            "provider created and core provisioning requested".to_string(),
+                        ),
+                        old_values: None,
+                        new_values: Some(snapshot.clone()),
+                        context: context.audit_context(),
+                    },
+                )?;
+                complete_idempotency_record(
+                    connection,
+                    &operation_type,
+                    &idempotency_key,
+                    "provider",
+                    provider.provider_id,
+                    snapshot,
+                )?;
+
+                Ok(CreateProviderPersistenceOutcome::Created(Box::new(created)))
+            })
+            .await
+    }
+
+    #[tracing::instrument(skip(self), fields(db.system="oracle", db.operation.name="providers.get", provider_id=%provider_id))]
+    pub async fn get_provider(&self, provider_id: Uuid) -> DbResult<Option<Provider>> {
+        self.pool
+            .with_connection(move |connection| {
+                let mut rows = connection
+                    .query(
+                        provider_select_sql(),
+                        &[&uuid_to_raw16(provider_id).to_vec()],
+                    )
+                    .map_err(|error| DbError::Query(format!("failed to get provider: {error}")))?;
+                match rows.next() {
+                    Some(Ok(row)) => map_provider_row(&row).map(Some),
+                    Some(Err(error)) => Err(DbError::Query(format!(
+                        "failed to read provider row: {error}"
+                    ))),
+                    None => Ok(None),
+                }
+            })
+            .await
+    }
+
+    #[tracing::instrument(skip(self), fields(db.system="oracle", db.operation.name="provider_ledger_accounts.list", provider_id=%provider_id))]
+    pub async fn get_provider_ledger_mappings(
+        &self,
+        provider_id: Uuid,
+    ) -> DbResult<Vec<ProviderLedgerAccountMapping>> {
+        self.pool
+            .with_connection(move |connection| {
+                let rows = connection
+                    .query(
+                        "SELECT account_category,tigerbeetle_account_id FROM provider_ledger_accounts WHERE provider_id=:1 ORDER BY account_category",
+                        &[&uuid_to_raw16(provider_id).to_vec()],
+                    )
+                    .map_err(|error| DbError::Query(format!("failed to list provider ledger mappings: {error}")))?;
+                rows.map(|row| {
+                    let row = row.map_err(|error| DbError::Query(format!("failed to read provider ledger mapping: {error}")))?;
+                    let category: String = row.get(0).map_err(read_error)?;
+                    let account_id: Vec<u8> = row.get(1).map_err(read_error)?;
+                    Ok(ProviderLedgerAccountMapping {
+                        category: ProviderAccountCategory::from_db_value(&category).ok_or_else(|| DbError::Query("unknown provider account category".to_string()))?,
+                        tigerbeetle_account_id: raw16_to_uuid(&account_id)?,
+                    })
+                }).collect()
+            })
+            .await
+    }
+
+    #[tracing::instrument(skip(self), fields(db.system="oracle", db.operation.name="providers.mark_ready", provider_id=%provider_id))]
+    pub async fn mark_provider_ready(&self, provider_id: Uuid) -> DbResult<Provider> {
+        self.pool
+            .with_transaction("finalize provider core provisioning", move |connection| {
+                let provider_id_raw = uuid_to_raw16(provider_id).to_vec();
+                let previous = fetch_provider(connection, provider_id)?;
+                connection.execute(
+                    "UPDATE provider_ledger_accounts SET status='ACTIVE',updated_at=SYSTIMESTAMP WHERE provider_id=:1 AND status='PROVISIONING'",
+                    &[&provider_id_raw],
+                ).map_err(|error| DbError::Query(format!("failed to activate provider ledger mappings: {error}")))?;
+                connection.execute(
+                    "UPDATE provider_provisioning_jobs SET status='SUCCEEDED',completed_at=SYSTIMESTAMP,updated_at=SYSTIMESTAMP,error_code=NULL,error_message=NULL WHERE provider_id=:1 AND job_type='TIGERBEETLE_PROVISION'",
+                    &[&provider_id_raw],
+                ).map_err(|error| DbError::Query(format!("failed to complete provider provisioning job: {error}")))?;
+                let updated = connection.execute(
+                    "UPDATE providers SET status='READY',updated_at=SYSTIMESTAMP WHERE provider_id=:1 AND status='PENDING_PROVISIONING'",
+                    &[&provider_id_raw],
+                ).map_err(|error| DbError::Query(format!("failed to mark provider ready: {error}")))?;
+                let provider = fetch_provider(connection, provider_id)?;
+                if updated.row_count().map_err(read_error)? != 1
+                    && provider.status != ProviderStatus::Ready
+                {
+                    return Err(DbError::Conflict("provider is not pending core provisioning".to_string()));
+                }
+                let snapshot = provider.replay_snapshot().to_string();
+                connection.execute(
+                    "UPDATE idempotency_records SET response_snapshot=:1,updated_at=SYSTIMESTAMP WHERE resource_type='provider' AND resource_id=:2 AND status='COMPLETED'",
+                    &[&snapshot, &provider_id_raw],
+                ).map_err(|error| DbError::Query(format!("failed to refresh provider idempotency snapshot: {error}")))?;
+                if previous.status != ProviderStatus::Ready {
+                    insert_audit_log(
+                        connection,
+                        NewAuditLog {
+                            audit_log_id: Uuid::new_v4(),
+                            entity_type: "PROVIDER".to_string(),
+                            entity_id: provider_id,
+                            action_type: AuditAction::StateTransition,
+                            reason: Some("provider core provisioning completed".to_string()),
+                            old_values: Some(previous.replay_snapshot()),
+                            new_values: Some(provider.replay_snapshot()),
+                            context: provisioning_audit_context(provider_id, "ready"),
+                        },
+                    )?;
+                }
+                Ok(provider)
+            })
+            .await
+    }
+}
+
+pub(crate) fn provisioning_audit_context(
+    provider_id: Uuid,
+    transition: &str,
+) -> TrustedAuditContext {
+    TrustedAuditContext {
+        actor_subject: "wurzburg-provider-provisioning".to_string(),
+        actor_client_id: Some("wurzburg-provider-provisioning".to_string()),
+        actor_provider_id: None,
+        actor_user_id: None,
+        actor_issuer: Some("wurzburg-internal".to_string()),
+        source_ip: None,
+        correlation_id: format!(
+            "provider-provisioning-{}-{transition}",
+            provider_id.simple()
+        ),
+        request_id: Uuid::new_v4().to_string(),
+    }
+}
+
+fn insert_provider(
+    connection: &oracle::Connection,
+    provider: &NewProvider,
+    actor_subject: &str,
+) -> DbResult<()> {
+    connection.execute(
+        "INSERT INTO providers (provider_id,legal_name,trade_name,tax_id,registration_number,email_address,website_url,mailing_address,status,metadata_json,created_by_subject,updated_by_subject) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,'PENDING_PROVISIONING',:9,:10,:10)",
+        &[&uuid_to_raw16(provider.provider_id).to_vec(), &provider.legal_name, &provider.trade_name, &provider.tax_id, &provider.registration_number, &provider.email_address, &provider.website_url, &provider.mailing_address, &provider.metadata.to_string(), &actor_subject],
+    ).map_err(|error| DbError::Query(format!("failed to insert provider: {error}")))?;
+    Ok(())
+}
+
+fn insert_contacts(
+    connection: &oracle::Connection,
+    provider: &NewProvider,
+    actor_subject: &str,
+) -> DbResult<()> {
+    for contact in &provider.contacts {
+        connection.execute(
+            "INSERT INTO provider_contacts (provider_contact_id,provider_id,contact_type,contact_name,email,phone,mobile,sms_enabled,metadata_json,status,created_by_subject,updated_by_subject) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,:9,'ACTIVE',:10,:10)",
+            &[&uuid_to_raw16(contact.provider_contact_id).to_vec(), &uuid_to_raw16(provider.provider_id).to_vec(), &contact.contact_type.as_db_value(), &contact.name, &contact.email, &contact.phone, &contact.mobile, &i32::from(contact.sms_enabled), &contact.metadata.to_string(), &actor_subject],
+        ).map_err(|error| DbError::Query(format!("failed to insert provider contact: {error}")))?;
+    }
+    Ok(())
+}
+
+fn insert_operational_profile(
+    connection: &oracle::Connection,
+    provider: &NewProvider,
+    actor_subject: &str,
+) -> DbResult<()> {
+    let profile_id = Uuid::new_v4();
+    let status = if provider.operational_profile.effective_at <= Utc::now() {
+        "ACTIVE"
+    } else {
+        "SCHEDULED"
+    };
+    let effective_at = provider.operational_profile.effective_at.to_rfc3339();
+    let profile = serde_json::to_string(&provider.operational_profile).map_err(|error| {
+        DbError::Query(format!("failed to serialize provider profile: {error}"))
+    })?;
+    connection.execute(
+        "INSERT INTO provider_operational_profiles (provider_operational_profile_id,provider_id,status,version,effective_at,profile_json,created_by_subject,change_reason) VALUES (:1,:2,:3,1,TO_TIMESTAMP_TZ(:4,'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM'),:5,:6,:7)",
+        &[&uuid_to_raw16(profile_id).to_vec(), &uuid_to_raw16(provider.provider_id).to_vec(), &status, &effective_at, &profile, &actor_subject, &"initial provider operational profile"],
+    ).map_err(|error| DbError::Query(format!("failed to insert provider operational profile: {error}")))?;
+    Ok(())
+}
+
+fn insert_ledger_mappings(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<()> {
+    for category in ProviderAccountCategory::ALL {
+        let account_id = category.deterministic_account_id(provider_id);
+        connection.execute(
+            "INSERT INTO provider_ledger_accounts (provider_ledger_account_id,provider_id,account_category,tigerbeetle_account_id,status) VALUES (:1,:2,:3,:4,'PROVISIONING')",
+            &[&uuid_to_raw16(Uuid::new_v4()).to_vec(), &uuid_to_raw16(provider_id).to_vec(), &category.as_db_value(), &uuid_to_raw16(account_id).to_vec()],
+        ).map_err(|error| DbError::Query(format!("failed to insert provider ledger mapping: {error}")))?;
+    }
+    Ok(())
+}
+
+fn insert_provisioning_jobs(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<()> {
+    let provider_id_simple = provider_id.simple().to_string();
+    for (job_type, request) in [
+        ("TIGERBEETLE_PROVISION", serde_json::json!({})),
+        (
+            "KAFKA_PROVISION",
+            serde_json::json!({
+                "topic_name": format!("provider.events.{provider_id_simple}"),
+                "username": format!("provider_user_{provider_id_simple}"),
+                "consumer_group": format!("provider_group_{provider_id_simple}")
+            }),
+        ),
+    ] {
+        connection.execute(
+            "INSERT INTO provider_provisioning_jobs (provider_provisioning_job_id,provider_id,job_type,status,request_json,result_json) VALUES (:1,:2,:3,'PENDING',:4,'{}')",
+            &[&uuid_to_raw16(Uuid::new_v4()).to_vec(), &uuid_to_raw16(provider_id).to_vec(), &job_type, &request.to_string()],
+        ).map_err(|error| DbError::Query(format!("failed to insert provider provisioning job: {error}")))?;
+    }
+    Ok(())
+}
+
+fn fetch_provider(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<Provider> {
+    let row = connection
+        .query_row(
+            provider_select_sql(),
+            &[&uuid_to_raw16(provider_id).to_vec()],
+        )
+        .map_err(|error| DbError::Query(format!("failed to fetch provider: {error}")))?;
+    map_provider_row(&row)
+}
+
+pub(crate) fn fetch_provider_for_command(
+    connection: &oracle::Connection,
+    provider_id: Uuid,
+) -> DbResult<Provider> {
+    fetch_provider(connection, provider_id)
+}
+
+fn provider_select_sql() -> &'static str {
+    "SELECT provider_id,legal_name,trade_name,tax_id,registration_number,email_address,website_url,mailing_address,status,JSON_SERIALIZE(metadata_json RETURNING CLOB),TO_CHAR(SYS_EXTRACT_UTC(created_at),'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'),TO_CHAR(SYS_EXTRACT_UTC(updated_at),'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"') FROM providers WHERE provider_id=:1"
+}
+
+fn map_provider_row(row: &Row) -> DbResult<Provider> {
+    let provider_id: Vec<u8> = row.get(0).map_err(read_error)?;
+    let status: String = row.get(8).map_err(read_error)?;
+    let metadata: String = row.get(9).map_err(read_error)?;
+    let created_at: String = row.get(10).map_err(read_error)?;
+    let updated_at: String = row.get(11).map_err(read_error)?;
+    Ok(Provider {
+        provider_id: raw16_to_uuid(&provider_id)?,
+        legal_name: row.get(1).map_err(read_error)?,
+        trade_name: row.get(2).map_err(read_error)?,
+        tax_id: row.get(3).map_err(read_error)?,
+        registration_number: row.get(4).map_err(read_error)?,
+        email_address: row.get(5).map_err(read_error)?,
+        website_url: row.get(6).map_err(read_error)?,
+        mailing_address: row.get(7).map_err(read_error)?,
+        status: ProviderStatus::from_db_value(&status)
+            .ok_or_else(|| DbError::Query("unknown provider status".to_string()))?,
+        metadata: serde_json::from_str(&metadata)
+            .map_err(|error| DbError::Query(format!("invalid provider metadata: {error}")))?,
+        created_at: parse_utc(&created_at)?,
+        updated_at: parse_utc(&updated_at)?,
+    })
+}
+
+fn classify_idempotency(
+    existing: &crate::domain::idempotency::IdempotencyRecord,
+    request_hash: &str,
+) -> DbResult<CreateProviderPersistenceOutcome> {
+    if existing.request_hash != request_hash {
+        return Ok(CreateProviderPersistenceOutcome::IdempotencyConflict);
+    }
+    Ok(match existing.status {
+        IdempotencyStatus::Completed => existing
+            .response_snapshot
+            .clone()
+            .map(CreateProviderPersistenceOutcome::Replayed)
+            .unwrap_or(CreateProviderPersistenceOutcome::IdempotencyInvalidState),
+        IdempotencyStatus::InProgress => CreateProviderPersistenceOutcome::IdempotencyInProgress,
+        IdempotencyStatus::Failed | IdempotencyStatus::Conflict => {
+            CreateProviderPersistenceOutcome::IdempotencyInvalidState
+        }
+    })
+}
+
+fn parse_utc(value: &str) -> DbResult<DateTime<Utc>> {
+    Ok(DateTime::parse_from_rfc3339(value)
+        .map_err(|error| DbError::Query(format!("invalid provider timestamp: {error}")))?
+        .with_timezone(&Utc))
+}
+
+fn read_error(error: oracle::Error) -> DbError {
+    DbError::Query(format!("failed to read Oracle provider row: {error}"))
+}

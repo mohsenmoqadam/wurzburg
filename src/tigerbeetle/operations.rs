@@ -1,3 +1,4 @@
+use super::error::{TigerBeetleError, TigerBeetleResult};
 use super::mapper;
 use super::models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use tokio::sync::oneshot;
 pub async fn process_transfers(
     client: &Arc<TbClient>,
     batch: &mut Vec<AppTransfer>,
-    responders: &mut Vec<oneshot::Sender<Result<Vec<AppCreateTransfersResult>, String>>>,
+    responders: &mut Vec<oneshot::Sender<TigerBeetleResult<Vec<AppCreateTransfersResult>>>>,
 ) {
     let tb_batch: Vec<_> = batch.iter().map(mapper::to_tb_transfer).collect();
 
@@ -17,7 +18,9 @@ pub async fn process_transfers(
             .iter()
             .map(mapper::from_tb_transfer_result)
             .collect()),
-        Err(e) => Err(format!("TigerBeetle create_transfers error: {:?}", e)),
+        Err(_) => Err(TigerBeetleError::ClientFailure {
+            operation: "create_transfers",
+        }),
     };
 
     for responder in responders.drain(..) {
@@ -30,7 +33,7 @@ pub async fn process_transfers(
 pub async fn process_accounts(
     client: &Arc<TbClient>,
     batch: &mut Vec<AppAccount>,
-    responders: &mut Vec<oneshot::Sender<Result<Vec<AppCreateAccountsResult>, String>>>,
+    responders: &mut Vec<oneshot::Sender<TigerBeetleResult<Vec<AppCreateAccountsResult>>>>,
 ) {
     let tb_batch: Vec<_> = batch.iter().map(mapper::to_tb_account).collect();
 
@@ -39,7 +42,9 @@ pub async fn process_accounts(
             .iter()
             .map(mapper::from_tb_account_result)
             .collect()),
-        Err(e) => Err(format!("TigerBeetle create_accounts error: {:?}", e)),
+        Err(_) => Err(TigerBeetleError::ClientFailure {
+            operation: "create_accounts",
+        }),
     };
 
     for responder in responders.drain(..) {
@@ -52,11 +57,13 @@ pub async fn process_accounts(
 pub async fn process_lookup_accounts(
     client: &Arc<TbClient>,
     batch: &mut Vec<u128>,
-    responders: &mut Vec<oneshot::Sender<Result<Vec<AppAccount>, String>>>,
+    responders: &mut Vec<oneshot::Sender<TigerBeetleResult<Vec<AppAccount>>>>,
 ) {
     let results = match client.lookup_accounts(batch).await {
         Ok(tb_results) => Ok(tb_results.iter().map(mapper::from_tb_account).collect()),
-        Err(e) => Err(format!("TigerBeetle lookup_accounts error: {:?}", e)),
+        Err(_) => Err(TigerBeetleError::ClientFailure {
+            operation: "lookup_accounts",
+        }),
     };
 
     for responder in responders.drain(..) {
@@ -69,11 +76,13 @@ pub async fn process_lookup_accounts(
 pub async fn process_lookup_transfers(
     client: &Arc<TbClient>,
     batch: &mut Vec<u128>,
-    responders: &mut Vec<oneshot::Sender<Result<Vec<AppTransfer>, String>>>,
+    responders: &mut Vec<oneshot::Sender<TigerBeetleResult<Vec<AppTransfer>>>>,
 ) {
     let results = match client.lookup_transfers(batch).await {
         Ok(tb_results) => Ok(tb_results.iter().map(mapper::from_tb_transfer).collect()),
-        Err(e) => Err(format!("TigerBeetle lookup_transfers error: {:?}", e)),
+        Err(_) => Err(TigerBeetleError::ClientFailure {
+            operation: "lookup_transfers",
+        }),
     };
 
     for responder in responders.drain(..) {

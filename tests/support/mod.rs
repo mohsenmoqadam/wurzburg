@@ -130,6 +130,8 @@ pub fn signed_test_jwt(options: TestJwtOptions, algorithm: Algorithm) -> String 
             "platform.card_ranges:read".to_string(),
             "platform.policies:write".to_string(),
             "platform.policies:read".to_string(),
+            "platform.providers:write".to_string(),
+            "platform.providers:read".to_string(),
         ],
     };
 

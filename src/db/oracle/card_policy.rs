@@ -813,7 +813,7 @@ fn update_draft_policy(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn insert_policy_outbox(
+pub(crate) fn insert_policy_outbox(
     connection: &oracle::Connection,
     operation_id: Uuid,
     card_range_id: Uuid,

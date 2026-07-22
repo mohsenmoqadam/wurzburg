@@ -2,33 +2,34 @@ use crate::tigerbeetle::models::AppAccountBalance;
 use tigerbeetle_rustclient_tests_snapshot::Account;
 use tokio::sync::oneshot;
 
+use super::error::TigerBeetleResult;
 use super::models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
 
 /// Commands routed to the background worker for batch processing.
 pub enum TbCommand {
     CreateAccount {
         account: AppAccount,
-        responder: oneshot::Sender<Result<Vec<AppCreateAccountsResult>, String>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<AppCreateAccountsResult>>>,
     },
     CreateTransfer {
         transfer: AppTransfer,
-        responder: oneshot::Sender<Result<Vec<AppCreateTransfersResult>, String>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<AppCreateTransfersResult>>>,
     },
     LookupAccount {
         id: u128,
-        responder: oneshot::Sender<Result<Vec<AppAccount>, String>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<AppAccount>>>,
     },
     LookupAccounts {
         ids: Vec<u128>,
-        response: oneshot::Sender<Result<Vec<Account>, String>>,
+        response: oneshot::Sender<TigerBeetleResult<Vec<Account>>>,
     },
     LookupTransfer {
         id: u128,
-        responder: oneshot::Sender<Result<Vec<AppTransfer>, String>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<AppTransfer>>>,
     },
     GetAccountBalances {
         ids: Vec<u128>,
-        responder: oneshot::Sender<Result<Vec<AppAccountBalance>, String>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<AppAccountBalance>>>,
     },
 }
 

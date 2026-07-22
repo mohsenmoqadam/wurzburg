@@ -7,6 +7,9 @@ use wurzburg::{
     config::Settings,
     db::oracle::verify_oracle_schema,
     kafka::{outbox_relay::start_outbox_relay, receipt_consumer::start_receipt_consumer},
+    services::{
+        provider::ProviderService, provider_provisioning::start_provider_provisioning_worker,
+    },
     state::AppState,
     telemetry,
 };
@@ -33,6 +36,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.kafka.outbox_relay.clone(),
     );
     let receipt_consumer = start_receipt_consumer(app_state.db.clone(), settings.kafka.clone())?;
+    let provider_provisioning = start_provider_provisioning_worker(
+        app_state.db.clone(),
+        ProviderService::new(
+            app_state.db.clone(),
+            app_state.tb_client.clone(),
+            settings.tigerbeetle.clone(),
+        ),
+        settings.provider_provisioning.clone(),
+    );
 
     // 5. Build main API router
     let app = build_app_router(app_state.clone());
@@ -70,6 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(receipt_consumer) = receipt_consumer {
         receipt_consumer.shutdown().await;
+    }
+    if let Some(provider_provisioning) = provider_provisioning {
+        provider_provisioning.shutdown().await;
     }
     server_result?;
 

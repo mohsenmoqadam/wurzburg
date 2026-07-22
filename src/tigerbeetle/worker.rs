@@ -9,6 +9,7 @@ use super::operations::{
     process_accounts, process_lookup_accounts, process_lookup_transfers, process_transfers,
 };
 use crate::config::Settings;
+use crate::tigerbeetle::TigerBeetleError;
 use crate::tigerbeetle::models::AppAccountBalance;
 
 /// Spawns the background worker to handle batched requests for all TigerBeetle operations.
@@ -74,7 +75,7 @@ pub async fn start_tb_worker(
                             let result = client
                                 .lookup_accounts(&ids)
                                 .await
-                                .map_err(|e| e.to_string());
+                                .map_err(|_| TigerBeetleError::ClientFailure { operation: "lookup_accounts" });
 
                             let _ = response.send(result);
                         }
@@ -97,7 +98,7 @@ pub async fn start_tb_worker(
                                     }).collect();
                                     Ok(balances)
                                 }
-                                Err(e) => Err(e.to_string()),
+                                Err(_) => Err(TigerBeetleError::ClientFailure { operation: "lookup_accounts" }),
                             };
                             let _ = responder.send(result);
                         }

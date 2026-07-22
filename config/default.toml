@@ -100,13 +100,25 @@ concurrency_max = 256
 batch_max_size = 8190
 batch_timeout_ms = 10
 channel_capacity = 65536
+operation_timeout_ms = 5000
 ledger_id = 1
-provider_account_code = 100
+provider_owned_account_code = 100
+provider_fee_account_code = 101
+cms_settlement_account_code = 102
+platform_fee_account_code = 103
 user_account_code = 200
 system_account_code = 300
 transfer_code = 1
-platform_fee_account_id = "00000000-0000-0000-0000-000000000001"
-cms_settlement_account_id = "00000000-0000-0000-0000-000000000002"
+
+[provider_provisioning]
+enabled = true
+worker_id = "wurzburg-provider-provisioning"
+batch_size = 10
+poll_interval_ms = 500
+lease_duration_ms = 30000
+max_attempts = 20
+initial_backoff_ms = 500
+max_backoff_ms = 60000
 
 [telemetry]
 enabled = true

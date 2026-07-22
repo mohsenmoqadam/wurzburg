@@ -166,7 +166,6 @@ Identity rules:
 Provider status:
 
 ```text
-DRAFT
 PENDING_PROVISIONING
 READY
 ACTIVE
@@ -177,21 +176,24 @@ FAILED
 
 Meaning:
 
-- `DRAFT`: provider identity exists but is not operational.
-- `PENDING_PROVISIONING`: Kafka/TigerBeetle/resources are being provisioned.
-- `READY`: asynchronous provisioning succeeded and the provider is waiting for
-  explicit admin activation.
+- `PENDING_PROVISIONING`: required TigerBeetle account verification is not yet
+  conclusive and durable recovery is still running.
+- `READY`: all required TigerBeetle accounts are verified and the provider is
+  waiting for explicit admin activation.
 - `ACTIVE`: provider can operate within its configured limits.
 - `SUSPENDED`: provider-level emergency umbrella is active; every provider-
   scoped business capability and provider-facing event is blocked.
 - `INACTIVE`: provider is administratively inactive but may be activated again.
 - `FAILED`: provisioning failed and needs operator intervention.
 
-Provisioning never activates a provider automatically. The worker transitions
-`PENDING_PROVISIONING -> READY` after every required TigerBeetle account is
-verified. Kafka provisioning has its own retryable job and does not block this
-transition. A platform admin then uses the explicit activation API to transition
-`READY -> ACTIVE`.
+Provisioning never activates a provider automatically. The create request first
+attempts bounded synchronous creation and exact lookup verification of all four
+deterministic TigerBeetle accounts. It returns `READY` when verification
+succeeds. If the dependency result is unavailable or uncertain, it returns
+`202 PENDING_PROVISIONING` and the worker performs the same verification before
+transitioning to `READY`. Kafka provisioning has its own retryable job and does
+not block this transition. A platform admin then uses the explicit activation
+API to transition `READY -> ACTIVE`.
 
 Activation requires all four verified provider TigerBeetle accounts and an
 operational profile effective at activation time. Kafka availability is not an
@@ -252,14 +254,12 @@ Rules:
   lifecycle workflows; Wurzburg does not expose a standalone CARD API that
   detaches a provider from a range.
 - The relationship row stores current lifecycle state. Every attach, suspend,
-  reactivate, move, provider deletion, or operational-control transition writes
-  an immutable audit snapshot.
-- A provider may be deleted only before any financial activity or transaction
-  history exists. Deletion is a provider soft delete and removes active
-  card-range eligibility without physically deleting relationship history. Once
-  a provider has transaction history, it cannot be deleted; lifecycle or
-  operational suspension can stop new use while preserving financial history and
-  TigerBeetle accounts.
+  reactivate, move, provider deactivation, or operational-control transition
+  writes an immutable audit snapshot.
+- Provider and card-range relationship rows are never physically deleted.
+  `SUSPENDED` and `INACTIVE` lifecycle controls stop new use while preserving
+  every relationship, financial fact, audit record, TigerBeetle account, and
+  TigerBeetle transfer.
 - Suspending eligibility blocks new onboarding, card assignment, credit grant,
   and use of that provider in new Balance/Confirm decisions. Full credit return
   remains allowed so the provider can reclaim existing user credit.
@@ -399,8 +399,11 @@ Onboarding and movement rules:
 
 ### Final Sync/Async Onboarding Decision
 
-Provider creation remains asynchronous because it provisions provider-wide
-TigerBeetle accounts and optional Kafka infrastructure through retryable jobs.
+Provider creation uses a synchronous TigerBeetle fast path because it is a
+low-volume administration command and a definitive response is operationally
+valuable. The same deterministic account IDs and durable provisioning job make
+timeouts, process loss, and uncertain dependency outcomes recoverable. Kafka
+infrastructure remains asynchronous and independent from Provider readiness.
 
 Single-user onboarding remains synchronous. The caller receives one definitive
 response only after the global user/link, card mapping, provider-user account,
@@ -695,10 +698,16 @@ provisioning job and must never be converted into successful Kafka provisioning.
 
 ### Provisioning Design
 
-- Provider provisioning is asynchronous.
-- `POST /providers` creates the provider in `PENDING_PROVISIONING`.
+- Provider provisioning has a synchronous TigerBeetle fast path backed by the
+  same durable recovery job used after timeout or process loss.
+- `POST /providers` creates the provider in `PENDING_PROVISIONING`, then creates
+  and verifies all four deterministic TigerBeetle accounts within the bounded
+  HTTP deadline. It returns `READY` when that verification completes, or `202`
+  with `PENDING_PROVISIONING` when recovery must continue after the response.
 - Wurzburg stores durable provisioning job rows.
-- A worker completes Kafka/TigerBeetle provisioning.
+- A worker resumes uncertain or incomplete TigerBeetle provisioning by exact
+  account lookup. Kafka provisioning always runs independently and
+  asynchronously because broker administration is not part of HTTP success.
 - Provider becomes `READY` after required TigerBeetle provisioning succeeds;
   activation remains an explicit platform-admin command. Kafka provisioning is
   independent and may continue or be retried after the provider is ready.
@@ -858,7 +867,7 @@ providers
 - email_address VARCHAR2(255) nullable
 - website_url VARCHAR2(512) nullable
 - mailing_address VARCHAR2(2000) nullable
-- status DRAFT | PENDING_PROVISIONING | READY | ACTIVE | SUSPENDED | INACTIVE | FAILED
+- status PENDING_PROVISIONING | READY | ACTIVE | SUSPENDED | INACTIVE | FAILED
 - metadata_json JSON default '{}' not null
 - created_by VARCHAR2(255) not null
 - updated_by VARCHAR2(255) nullable
@@ -1875,6 +1884,22 @@ POST   /api/v1/providers/{provider_id}/deactivate
 POST   /api/v1/providers/{provider_id}/retry-provisioning
 ```
 
+Provider range eligibility is managed through provider-centric commands and is
+never physically deleted:
+
+```text
+PUT  /api/v1/providers/{provider_id}/card-range
+POST /api/v1/providers/{provider_id}/card-range/suspend
+POST /api/v1/providers/{provider_id}/card-range/reactivate
+```
+
+Initial assignment creates or reactivates a relationship row. Suspension keeps
+that row and preserves every card, funding source, audit fact, Oracle financial
+fact, and TigerBeetle account/transfer. A move keeps the prior relationship as
+`SUSPENDED` and is rejected while that range still has active cards, active
+funding sources, or outstanding provider-user credit. Historical transactions
+alone never cause deletion and do not prevent a safe move.
+
 Provider contacts:
 
 ```text
@@ -2645,7 +2670,8 @@ Recommended order:
 1. Clean Oracle baseline migrations, Oracle persistence modules, application
    services, and common audit integration.
 2. Provider identity, contacts, lifecycle, and scheduled operational profiles.
-3. Provider ledger account records and asynchronous TigerBeetle provisioning.
+3. Provider ledger account records, synchronous TigerBeetle verification, and
+   durable recovery of uncertain outcomes.
 4. Provider Kafka credential provisioning and explicit admin activation.
 5. Idempotency records, operation WAL, Oracle outbox,
    publisher, receipt inbox, recovery worker, and operation-status API.

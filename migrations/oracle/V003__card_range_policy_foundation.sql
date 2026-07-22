@@ -1,23 +1,3 @@
-CREATE TABLE providers (
-    provider_id RAW(16) PRIMARY KEY,
-    legal_name VARCHAR2(255) NOT NULL,
-    trade_name VARCHAR2(255) NOT NULL,
-    tax_id VARCHAR2(64),
-    registration_number VARCHAR2(64),
-    email_address VARCHAR2(255),
-    website_url VARCHAR2(512),
-    mailing_address VARCHAR2(1000),
-    status VARCHAR2(32) NOT NULL,
-    metadata_json JSON DEFAULT '{}' NOT NULL,
-    created_by_subject VARCHAR2(255) NOT NULL,
-    updated_by_subject VARCHAR2(255) NOT NULL,
-    created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
-    updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
-    CONSTRAINT ck_providers_status CHECK (
-        status IN ('DRAFT', 'PENDING_PROVISIONING', 'READY', 'ACTIVE', 'SUSPENDED', 'INACTIVE', 'FAILED')
-    )
-);
-
 CREATE TABLE card_ranges (
     card_range_id RAW(16) PRIMARY KEY,
     start_card_number VARCHAR2(16) NOT NULL,

@@ -4,12 +4,18 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use super::handlers::{card_policies, card_ranges, system};
+use super::handlers::{card_policies, card_ranges, providers, system};
 
 #[derive(OpenApi)]
 #[openapi(
     modifiers(&SecurityAddon),
     paths(
+            providers::create_provider,
+            providers::get_provider,
+            providers::assign_provider_card_range,
+            providers::activate_provider,
+            providers::suspend_provider,
+            providers::deactivate_provider,
             card_ranges::create_card_range,
             card_ranges::get_card_range,
             card_ranges::list_card_ranges,
@@ -27,6 +33,26 @@ use super::handlers::{card_policies, card_ranges, system};
     ),
     components(
         schemas(
+            providers::CreateProviderRequest,
+            providers::ProviderContactRequest,
+            providers::ProviderOperationalProfileRequest,
+            providers::ProviderOperationalControlsRequest,
+            providers::ProviderUserOnboardingControlRequest,
+            providers::ProviderActiveWindowRequest,
+            providers::ProviderCreditGrantControlRequest,
+            providers::ProviderEnabledControlRequest,
+            providers::ProviderCardOperationsControlRequest,
+            providers::ProviderEventDeliveryControlRequest,
+            providers::ProviderContactTypeDto,
+            providers::CreditGrantLimitModeDto,
+            providers::ProviderWeekdayDto,
+            providers::ProviderStatusDto,
+            providers::ProviderResponse,
+            providers::ProviderCoreProvisioningStatusDto,
+            providers::ProviderKafkaProvisioningStatusDto,
+            providers::AssignProviderCardRangeRequest,
+            providers::ProviderCardRangeAssignmentResponse,
+            providers::ProviderLifecycleRequest,
             card_ranges::CreateCardRangeRequest,
             card_ranges::CardRangeResponse,
             card_ranges::ListCardRangesQuery,
@@ -61,6 +87,7 @@ use super::handlers::{card_policies, card_ranges, system};
         )
     ),
     tags(
+        (name = "Providers", description = "Platform-admin provider lifecycle and provisioning APIs"),
         (name = "Card Ranges", description = "Platform-admin card range control APIs"),
         (name = "Card Policies", description = "Platform-admin range policy APIs"),
         (name = "Operations", description = "Durable integration operation status APIs"),
