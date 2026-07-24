@@ -115,6 +115,15 @@ pub fn signed_platform_admin_jwt() -> String {
 }
 
 #[allow(dead_code)]
+pub fn signed_platform_admin_without_audit_scope() -> String {
+    let scopes = platform_admin_scopes()
+        .into_iter()
+        .filter(|scope| scope != "platform.audit:read")
+        .collect();
+    signed_test_jwt_with_scopes(TestJwtOptions::default(), Algorithm::RS256, scopes)
+}
+
+#[allow(dead_code)]
 pub fn signed_provider_admin_jwt(provider_id: uuid::Uuid) -> String {
     signed_test_jwt(
         TestJwtOptions {
@@ -139,6 +148,14 @@ pub fn signed_conflicting_client_jwt() -> String {
 
 #[allow(dead_code)]
 pub fn signed_test_jwt(options: TestJwtOptions, algorithm: Algorithm) -> String {
+    signed_test_jwt_with_scopes(options, algorithm, platform_admin_scopes())
+}
+
+fn signed_test_jwt_with_scopes(
+    options: TestJwtOptions,
+    algorithm: Algorithm,
+    scopes: Vec<String>,
+) -> String {
     let claims = TestJwtClaims {
         iss: options.issuer,
         aud: options.audience,
@@ -150,19 +167,7 @@ pub fn signed_test_jwt(options: TestJwtOptions, algorithm: Algorithm) -> String 
         iat: 1_600_000_000,
         jti: uuid::Uuid::new_v4().to_string(),
         roles: vec!["wurzburg_platform_admin".to_string()],
-        scope: vec![
-            "platform.card_ranges:write".to_string(),
-            "platform.card_ranges:read".to_string(),
-            "platform.policies:write".to_string(),
-            "platform.policies:read".to_string(),
-            "platform.providers:write".to_string(),
-            "platform.providers:read".to_string(),
-            "provider.kafka_credentials:read".to_string(),
-            "provider.kafka_credentials:rotate".to_string(),
-            "provider.events:read".to_string(),
-            "platform.provider_events:read".to_string(),
-            "platform.provider_events:write".to_string(),
-        ],
+        scope: scopes,
         provider_id: options.provider_id,
     };
 
@@ -172,6 +177,23 @@ pub fn signed_test_jwt(options: TestJwtOptions, algorithm: Algorithm) -> String 
         &EncodingKey::from_rsa_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("valid test RSA key"),
     )
     .expect("test JWT should sign")
+}
+
+fn platform_admin_scopes() -> Vec<String> {
+    vec![
+        "platform.card_ranges:write".to_string(),
+        "platform.card_ranges:read".to_string(),
+        "platform.policies:write".to_string(),
+        "platform.policies:read".to_string(),
+        "platform.providers:write".to_string(),
+        "platform.providers:read".to_string(),
+        "platform.audit:read".to_string(),
+        "provider.kafka_credentials:read".to_string(),
+        "provider.kafka_credentials:rotate".to_string(),
+        "provider.events:read".to_string(),
+        "platform.provider_events:read".to_string(),
+        "platform.provider_events:write".to_string(),
+    ]
 }
 
 #[allow(dead_code)]

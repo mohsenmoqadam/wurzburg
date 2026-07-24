@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/credit_granted.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:credit_granted",
   "allOf": [
-    { "$ref": "envelope.schema.json" },
-    { "properties": { "event_type": { "const": "CREDIT_GRANTED" }, "data": { "$ref": "money_movement.schema.json" } } }
+    { "$ref": "urn:wurzburg:provider-events:v1:envelope" },
+    { "properties": { "event_type": { "const": "CREDIT_GRANTED" }, "data": { "$ref": "urn:wurzburg:provider-events:v1:money_movement" } } }
   ]
 }

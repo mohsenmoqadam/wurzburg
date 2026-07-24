@@ -47,6 +47,10 @@ pub enum WurzburgResultCode {
     ProviderKafkaCredentialVersionConflict,
     ProviderEventSubscriptionInvalid,
     ProviderEventSubscriptionVersionConflict,
+    ProviderEventContractNotFound,
+    InvalidProviderFilter,
+    ProviderLedgerUnavailable,
+    InvalidAuditLogFilter,
     DatabaseUnavailable,
     DatabaseHealthUnavailable,
 }
@@ -311,6 +315,30 @@ impl WurzburgResultCode {
                 "PROVIDER_EVENT_SUBSCRIPTION_VERSION_CONFLICT",
                 "Provider event subscriptions changed concurrently",
                 StatusCode::CONFLICT,
+            ),
+            Self::ProviderEventContractNotFound => (
+                6513,
+                "PROVIDER_EVENT_CONTRACT_NOT_FOUND",
+                "Provider event contract was not found",
+                StatusCode::NOT_FOUND,
+            ),
+            Self::InvalidProviderFilter => (
+                6514,
+                "INVALID_PROVIDER_FILTER",
+                "Provider list filter or page token is invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            Self::ProviderLedgerUnavailable => (
+                6515,
+                "PROVIDER_LEDGER_UNAVAILABLE",
+                "Provider ledger balances are temporarily unavailable",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            Self::InvalidAuditLogFilter => (
+                6600,
+                "INVALID_AUDIT_LOG_FILTER",
+                "Audit log filter or page token is invalid",
+                StatusCode::BAD_REQUEST,
             ),
             Self::DatabaseUnavailable => (
                 6300,

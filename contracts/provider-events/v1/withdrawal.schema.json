@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/withdrawal.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:withdrawal",
   "type": "object",
   "additionalProperties": false,
   "required": ["currency", "principal_amount_rials", "provider_amount_rials", "cms_transaction_reference"],

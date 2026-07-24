@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     body::Bytes,
-    extract::{OriginalUri, Path, State},
+    extract::{OriginalUri, Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, Method, StatusCode},
     response::Response,
 };
 use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -23,7 +24,8 @@ use crate::{
     },
     domain::provider::{
         CreditGrantLimitMode, NewProvider, Provider, ProviderActiveWindow, ProviderContact,
-        ProviderContactType, ProviderOperationalProfile, ProviderStatus, ProviderWeekday,
+        ProviderContactType, ProviderLedgerAccountBalance, ProviderListCursor, ProviderListItem,
+        ProviderListQuery, ProviderOperationalProfile, ProviderStatus, ProviderWeekday,
     },
     services::{
         provider::{CreateProviderOutcome, ProviderProvisioningDisposition, ProviderService},
@@ -194,6 +196,59 @@ pub struct ProviderResponse {
     pub kafka_provisioning_status: ProviderKafkaProvisioningStatusDto,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListProvidersQuery {
+    pub status: Option<String>,
+    pub tax_id: Option<String>,
+    pub page_size: Option<u32>,
+    pub page_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProviderListItemResponse {
+    pub provider_id: Uuid,
+    pub legal_name: String,
+    pub trade_name: String,
+    pub tax_id: Option<String>,
+    pub status: ProviderStatusDto,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListProvidersResponse {
+    pub data: Vec<ProviderListItemResponse>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProviderLedgerResponse {
+    pub provider_id: Uuid,
+    pub currency: String,
+    pub accounts: Vec<ProviderLedgerAccountResponse>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProviderLedgerAccountResponse {
+    pub account_category: String,
+    pub tigerbeetle_account_id: Uuid,
+    pub debits_posted: String,
+    pub credits_posted: String,
+    pub debits_pending: String,
+    pub credits_pending: String,
+    pub posted_balance: String,
+    pub effective_balance: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProviderPageToken {
+    created_at: DateTime<Utc>,
+    provider_id: Uuid,
+    filter_hash: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -368,6 +423,119 @@ pub async fn get_provider(
 
 #[utoipa::path(
     get,
+    path = "/api/v1/providers",
+    tag = "Providers",
+    params(
+        ("status" = Option<String>, Query, description = "Exact provider lifecycle status."),
+        ("tax_id" = Option<String>, Query, description = "Exact normalized tax identifier."),
+        ("page_size" = Option<u32>, Query, description = "Page size from 1 through 200; defaults to 50."),
+        ("page_token" = Option<String>, Query, description = "Opaque token returned by the previous page.")
+    ),
+    responses(
+        (status = 200, body = ListProvidersResponse),
+        (status = 400, body = crate::api::error::ApiErrorResponse),
+        (status = 401, body = crate::api::error::ApiErrorResponse),
+        (status = 403, body = crate::api::error::ApiErrorResponse),
+        (status = 503, body = crate::api::error::ApiErrorResponse)
+    ),
+    security(("wso2_backend_bearer"=[]))
+)]
+#[tracing::instrument(skip(state, headers, query))]
+pub async fn list_providers(
+    State(state): State<Arc<AppState>>,
+    query: Result<Query<ListProvidersQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(|_| invalid_provider_filter("query"))?;
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let status = query
+        .status
+        .as_deref()
+        .map(parse_provider_status)
+        .transpose()?;
+    let tax_id = normalize_provider_filter(query.tax_id, "tax_id")?;
+    let page_size = query.page_size.unwrap_or(50);
+    if !(1..=200).contains(&page_size) {
+        return Err(invalid_provider_filter("page_size"));
+    }
+    let cursor = query
+        .page_token
+        .as_deref()
+        .map(|token| parse_provider_page_token(token, status, tax_id.as_deref()))
+        .transpose()?;
+    let service = ProviderService::new(
+        state.db.clone(),
+        state.tb_client.clone(),
+        state.config.tigerbeetle.clone(),
+        state.provider_kafka_credentials.clone(),
+    );
+    let page = service
+        .list_providers(
+            &actor,
+            ProviderListQuery {
+                status,
+                tax_id: tax_id.clone(),
+                limit: page_size,
+                cursor,
+            },
+        )
+        .await?;
+    let next_page_token = page
+        .next_cursor
+        .map(|cursor| format_provider_page_token(cursor, status, tax_id));
+    success_response(
+        StatusCode::OK,
+        ListProvidersResponse {
+            data: page.items.into_iter().map(Into::into).collect(),
+            next_page_token,
+        },
+    )
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/providers/{provider_id}/ledger",
+    tag = "Providers",
+    params(("provider_id" = Uuid, Path)),
+    responses(
+        (status = 200, body = ProviderLedgerResponse),
+        (status = 401, body = crate::api::error::ApiErrorResponse),
+        (status = 403, body = crate::api::error::ApiErrorResponse),
+        (status = 404, body = crate::api::error::ApiErrorResponse),
+        (status = 503, body = crate::api::error::ApiErrorResponse)
+    ),
+    security(("wso2_backend_bearer"=[]))
+)]
+#[tracing::instrument(skip(state, headers), fields(provider_id=%provider_id))]
+pub async fn get_provider_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_context =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
+    let service = ProviderService::new(
+        state.db.clone(),
+        state.tb_client.clone(),
+        state.config.tigerbeetle.clone(),
+        state.provider_kafka_credentials.clone(),
+    );
+    let accounts = service.get_provider_ledger(&actor, provider_id).await?;
+    success_response(
+        StatusCode::OK,
+        ProviderLedgerResponse {
+            provider_id,
+            currency: "IRR".to_string(),
+            accounts: accounts.into_iter().map(Into::into).collect(),
+        },
+    )
+}
+
+#[utoipa::path(
+    get,
     path = "/api/v1/providers/{provider_id}/kafka/credentials",
     tag = "Providers",
     params(("provider_id" = Uuid, Path)),
@@ -397,7 +565,7 @@ pub async fn get_provider_kafka_credentials(
         state.db.clone(),
         state.kafka_admin.clone(),
         credentials,
-        state.config.provider_kafka.scram_iterations,
+        state.config.provider_kafka_access.scram_iterations,
     );
     let response = service
         .read_credentials(
@@ -442,7 +610,7 @@ pub async fn get_provider_kafka_status(
         state.db.clone(),
         state.kafka_admin.clone(),
         credentials,
-        state.config.provider_kafka.scram_iterations,
+        state.config.provider_kafka_access.scram_iterations,
     );
     let status = service.read_status(&actor, provider_id).await?;
     success_response(StatusCode::OK, ProviderKafkaStatusResponse::from(status))
@@ -580,7 +748,7 @@ async fn command_provider_kafka(
         state.db.clone(),
         state.kafka_admin.clone(),
         credentials,
-        state.config.provider_kafka.scram_iterations,
+        state.config.provider_kafka_access.scram_iterations,
     );
     match service
         .command_access(&context, provider_id, definition.action, request.reason)
@@ -809,6 +977,36 @@ impl ProviderResponse {
     }
 }
 
+impl From<ProviderListItem> for ProviderListItemResponse {
+    fn from(value: ProviderListItem) -> Self {
+        Self {
+            provider_id: value.provider_id,
+            legal_name: value.legal_name,
+            trade_name: value.trade_name,
+            tax_id: value.tax_id,
+            status: value.status.into(),
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<ProviderLedgerAccountBalance> for ProviderLedgerAccountResponse {
+    fn from(value: ProviderLedgerAccountBalance) -> Self {
+        Self {
+            account_category: value.account_category.as_db_value().to_string(),
+            tigerbeetle_account_id: value.tigerbeetle_account_id,
+            debits_posted: value.debits_posted,
+            credits_posted: value.credits_posted,
+            debits_pending: value.debits_pending,
+            credits_pending: value.credits_pending,
+            posted_balance: value.posted_balance,
+            effective_balance: value.effective_balance,
+            status: value.status,
+        }
+    }
+}
+
 impl From<ProviderKafkaCredentialBundle> for ProviderKafkaCredentialsResponse {
     fn from(value: ProviderKafkaCredentialBundle) -> Self {
         Self {
@@ -933,6 +1131,95 @@ enum_mapping!(ProviderContactTypeDto => ProviderContactType { Finance, Technical
 enum_mapping!(CreditGrantLimitModeDto => CreditGrantLimitMode { FixedLimit, CmsDebtLimit, OutstandingCreditLimit });
 enum_mapping!(ProviderWeekdayDto => ProviderWeekday { Saturday, Sunday, Monday, Tuesday, Wednesday, Thursday, Friday });
 enum_mapping!(ProviderStatus => ProviderStatusDto { PendingProvisioning, Ready, Active, Suspended, Inactive, Failed });
+
+fn parse_provider_status(value: &str) -> Result<ProviderStatus, ApiError> {
+    ProviderStatus::from_db_value(value).ok_or_else(|| invalid_provider_filter("status"))
+}
+
+fn normalize_provider_filter(
+    value: Option<String>,
+    filter: &'static str,
+) -> Result<Option<String>, ApiError> {
+    value
+        .map(|value| {
+            let value = value.trim().to_string();
+            if value.is_empty() || value.len() > 64 || value.chars().any(char::is_control) {
+                Err(invalid_provider_filter(filter))
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()
+}
+
+fn parse_provider_page_token(
+    value: &str,
+    status: Option<ProviderStatus>,
+    tax_id: Option<&str>,
+) -> Result<ProviderListCursor, ApiError> {
+    let bytes = decode_hex(value).ok_or_else(|| invalid_provider_filter("page_token"))?;
+    let token: ProviderPageToken =
+        serde_json::from_slice(&bytes).map_err(|_| invalid_provider_filter("page_token"))?;
+    if token.filter_hash != provider_filter_hash(status, tax_id) {
+        return Err(invalid_provider_filter("page_token"));
+    }
+    Ok(ProviderListCursor {
+        created_at: token.created_at,
+        provider_id: token.provider_id,
+    })
+}
+
+fn format_provider_page_token(
+    cursor: ProviderListCursor,
+    status: Option<ProviderStatus>,
+    tax_id: Option<String>,
+) -> String {
+    let token = ProviderPageToken {
+        created_at: cursor.created_at,
+        provider_id: cursor.provider_id,
+        filter_hash: provider_filter_hash(status, tax_id.as_deref()),
+    };
+    encode_hex(&serde_json::to_vec(&token).expect("provider page token is serializable"))
+}
+
+fn provider_filter_hash(status: Option<ProviderStatus>, tax_id: Option<&str>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(status.map(ProviderStatus::as_db_value).unwrap_or(""));
+    hasher.update([0]);
+    hasher.update(tax_id.unwrap_or(""));
+    encode_hex(&hasher.finalize())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if value.len() % 2 != 0 || value.len() > 4096 {
+        return None;
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(pair, 16).ok()
+        })
+        .collect()
+}
+
+fn invalid_provider_filter(filter: &'static str) -> ApiError {
+    ApiError::with_details(
+        WurzburgResultCode::InvalidProviderFilter,
+        serde_json::json!({ "filter": filter }),
+    )
+}
 
 fn empty_metadata() -> serde_json::Value {
     serde_json::json!({})

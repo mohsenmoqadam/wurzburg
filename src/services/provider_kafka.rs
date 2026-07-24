@@ -11,7 +11,7 @@ use crate::{
         error::ApiError,
         result_codes::WurzburgResultCode,
     },
-    config::ProviderKafkaConfig,
+    config::ProviderKafkaAccessConfig,
     db::oracle::{
         OracleRepository, ProviderKafkaAccessRecord, ProviderKafkaCommandAction,
         ProviderKafkaCommandOutcome, ProviderKafkaCredentialReadOutcome, ProviderKafkaJobType,
@@ -64,11 +64,11 @@ impl ProviderKafkaProvisioningHandle {
 pub fn start_provider_kafka_provisioning_worker(
     repository: Arc<OracleRepository>,
     service: ProviderKafkaService,
-    config: ProviderKafkaConfig,
+    config: ProviderKafkaAccessConfig,
 ) -> Option<ProviderKafkaProvisioningHandle> {
     if !config.enabled {
         tracing::info!(
-            worker.name = "provider-kafka-provisioning",
+            worker.name = "provider-kafka-access-provisioning",
             "Provider Kafka provisioning worker disabled"
         );
         return None;
@@ -98,7 +98,7 @@ impl ProviderKafkaProvisioningError {
 async fn run_worker(
     repository: Arc<OracleRepository>,
     service: ProviderKafkaService,
-    config: ProviderKafkaConfig,
+    config: ProviderKafkaAccessConfig,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -196,12 +196,12 @@ async fn run_worker(
         }
     }
     tracing::info!(
-        worker.name = "provider-kafka-provisioning",
+        worker.name = "provider-kafka-access-provisioning",
         "Provider Kafka provisioning worker stopped"
     );
 }
 
-fn retry_backoff(config: &ProviderKafkaConfig, attempt: u32) -> Duration {
+fn retry_backoff(config: &ProviderKafkaAccessConfig, attempt: u32) -> Duration {
     let exponent = attempt.saturating_sub(1).min(31);
     let base = config
         .initial_backoff_ms
@@ -221,8 +221,8 @@ mod tests {
         let settings = Settings::new().expect("settings should load");
         for attempt in [1, 2, 10, u32::MAX] {
             assert!(
-                retry_backoff(&settings.provider_kafka, attempt).as_millis()
-                    <= u128::from(settings.provider_kafka.max_backoff_ms)
+                retry_backoff(&settings.provider_kafka_access, attempt).as_millis()
+                    <= u128::from(settings.provider_kafka_access.max_backoff_ms)
             );
         }
     }
@@ -332,7 +332,7 @@ impl ProviderKafkaService {
             username: access.username,
             consumer_group: access.consumer_group,
             password,
-            security_cert: access.security_cert,
+            security_cert: self.credentials.security_cert().map(ToString::to_string),
             credential_version,
             credential_status: access.credential_status,
         })

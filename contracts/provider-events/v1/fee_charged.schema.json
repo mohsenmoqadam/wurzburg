@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/fee_charged.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:fee_charged",
   "allOf": [
-    { "$ref": "envelope.schema.json" },
+    { "$ref": "urn:wurzburg:provider-events:v1:envelope" },
     { "properties": { "event_type": { "const": "FEE_CHARGED" }, "data": { "type": "object", "additionalProperties": false, "required": ["currency", "amount_rials", "fee_source"], "properties": { "currency": { "const": "IRR" }, "amount_rials": { "type": "string", "pattern": "^[0-9]+$" }, "fee_source": { "enum": ["PROVIDER", "PROVIDER_USER"] } } } } }
   ]
 }

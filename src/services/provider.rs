@@ -12,7 +12,9 @@ use crate::{
     },
     config::TigerBeetleConfig,
     db::oracle::{CreateProviderPersistenceOutcome, OracleRepository},
-    domain::provider::{NewProvider, Provider},
+    domain::provider::{
+        NewProvider, Provider, ProviderLedgerAccountBalance, ProviderListPage, ProviderListQuery,
+    },
     security::provider_kafka_cipher::ProviderKafkaCredentialFactory,
     tigerbeetle::{AppAccount, AppTbClient, TigerBeetleError},
 };
@@ -137,6 +139,114 @@ impl ProviderService {
             .await
             .map_err(ApiError::from_database)?
             .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderNotFound))
+    }
+
+    #[tracing::instrument(skip(self, actor, query))]
+    pub async fn list_providers(
+        &self,
+        actor: &TrustedActor,
+        query: ProviderListQuery,
+    ) -> Result<ProviderListPage, ApiError> {
+        require_scope(actor, "platform.providers:read")?;
+        self.repository
+            .list_providers(query)
+            .await
+            .map_err(ApiError::from_database)
+    }
+
+    #[tracing::instrument(skip(self, actor), fields(provider_id=%provider_id))]
+    pub async fn get_provider_ledger(
+        &self,
+        actor: &TrustedActor,
+        provider_id: Uuid,
+    ) -> Result<Vec<ProviderLedgerAccountBalance>, ApiError> {
+        require_scope(actor, "platform.providers:read")?;
+        if self
+            .repository
+            .get_provider(provider_id)
+            .await
+            .map_err(ApiError::from_database)?
+            .is_none()
+        {
+            return Err(ApiError::new(WurzburgResultCode::ProviderNotFound));
+        }
+        let mappings = self
+            .repository
+            .get_provider_ledger_mappings(provider_id)
+            .await
+            .map_err(ApiError::from_database)?;
+        if mappings.len() != 4 {
+            tracing::error!(
+                provider_id = %provider_id,
+                account.count = mappings.len(),
+                "provider ledger mapping set is incomplete"
+            );
+            return Err(ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable));
+        }
+        let ids = mappings
+            .iter()
+            .map(|mapping| mapping.tigerbeetle_account_id.as_u128())
+            .collect();
+        let accounts = self.tb_client.lookup_accounts(ids).await.map_err(|error| {
+            tracing::error!(
+                provider_id = %provider_id,
+                error.kind = error.diagnostic_kind(),
+                "TigerBeetle provider ledger lookup failed"
+            );
+            ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable)
+        })?;
+        if accounts.len() != 4 {
+            tracing::error!(
+                provider_id = %provider_id,
+                account.count = accounts.len(),
+                "TigerBeetle returned an incomplete provider ledger account set"
+            );
+            return Err(ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable));
+        }
+
+        mappings
+            .into_iter()
+            .map(|mapping| {
+                let account_id = mapping.tigerbeetle_account_id.as_u128();
+                let account = accounts
+                    .iter()
+                    .find(|account| account.id == account_id)
+                    .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable))?;
+                if account.user_data_128 != provider_id.as_u128()
+                    || account.ledger != self.tb_config.ledger_id
+                    || account.code != self.tb_config.provider_account_code(mapping.category)
+                {
+                    tracing::error!(
+                        provider_id = %provider_id,
+                        account.category = mapping.category.as_db_value(),
+                        "TigerBeetle provider ledger account violates its configured contract"
+                    );
+                    return Err(ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable));
+                }
+                let effective_credits = account
+                    .credits_posted
+                    .checked_add(account.credits_pending)
+                    .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable))?;
+                let effective_debits = account
+                    .debits_posted
+                    .checked_add(account.debits_pending)
+                    .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable))?;
+                Ok(ProviderLedgerAccountBalance {
+                    account_category: mapping.category,
+                    tigerbeetle_account_id: mapping.tigerbeetle_account_id,
+                    debits_posted: account.debits_posted.to_string(),
+                    credits_posted: account.credits_posted.to_string(),
+                    debits_pending: account.debits_pending.to_string(),
+                    credits_pending: account.credits_pending.to_string(),
+                    posted_balance: signed_difference(
+                        account.credits_posted,
+                        account.debits_posted,
+                    ),
+                    effective_balance: signed_difference(effective_credits, effective_debits),
+                    status: mapping.status,
+                })
+            })
+            .collect()
     }
 
     #[tracing::instrument(skip(self), fields(provider_id=%provider_id))]
@@ -304,5 +414,25 @@ impl ProviderService {
             }
         }
         Ok(())
+    }
+}
+
+fn signed_difference(credits: u128, debits: u128) -> String {
+    if credits >= debits {
+        (credits - debits).to_string()
+    } else {
+        format!("-{}", debits - credits)
+    }
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::signed_difference;
+
+    #[test]
+    fn signed_difference_preserves_full_u128_range() {
+        assert_eq!(signed_difference(150, 100), "50");
+        assert_eq!(signed_difference(100, 150), "-50");
+        assert_eq!(signed_difference(u128::MAX, 0), u128::MAX.to_string());
     }
 }

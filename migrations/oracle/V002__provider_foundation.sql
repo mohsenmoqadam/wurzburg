@@ -121,7 +121,6 @@ CREATE TABLE provider_kafka_access (
     security_protocol VARCHAR2(64) NOT NULL,
     sasl_mechanism VARCHAR2(64) NOT NULL,
     bootstrap_servers_json JSON NOT NULL,
-    security_cert CLOB,
     credential_status VARCHAR2(32) DEFAULT 'PROVISIONING' NOT NULL,
     last_delivered_at TIMESTAMP(6) WITH TIME ZONE,
     rotated_at TIMESTAMP(6) WITH TIME ZONE,

@@ -38,11 +38,11 @@ async fn provisions_rotates_suspends_and_resumes_real_provider_kafka_access() {
     }
     support::init_test_tracing();
     let mut settings = Settings::new().expect("integration settings should load");
-    settings.provider_kafka.enabled = true;
+    settings.provider_kafka_access.enabled = true;
     prepare_oracle_schema(&settings.database, &settings.migrations)
         .await
         .expect("Oracle schema should be prepared before scenarios run");
-    settings.provider_provisioning.enabled = false;
+    settings.provider_core_provisioning.enabled = false;
     let state = Arc::new(AppState::new(settings.clone()).await.unwrap());
     let worker = start_provider_kafka_provisioning_worker(
         state.db.clone(),
@@ -53,9 +53,9 @@ async fn provisions_rotates_suspends_and_resumes_real_provider_kafka_access() {
                 .provider_kafka_credentials
                 .clone()
                 .expect("Provider Kafka credentials should initialize"),
-            settings.provider_kafka.scram_iterations,
+            settings.provider_kafka_access.scram_iterations,
         ),
-        settings.provider_kafka.clone(),
+        settings.provider_kafka_access.clone(),
     )
     .expect("Provider Kafka worker should run");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

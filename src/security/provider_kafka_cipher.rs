@@ -5,7 +5,7 @@ use ring::{
 use uuid::Uuid;
 
 use crate::{
-    config::{KafkaConfig, ProviderKafkaConfig},
+    config::{KafkaConfig, ProviderKafkaAccessConfig},
     domain::provider::{NewProviderKafkaAccess, NewProviderKafkaCredential},
 };
 
@@ -83,12 +83,9 @@ pub struct ProviderKafkaCredentialFactory {
 impl ProviderKafkaCredentialFactory {
     pub fn from_config(
         kafka: &KafkaConfig,
-        provider_kafka: &ProviderKafkaConfig,
+        provider_kafka_access: &ProviderKafkaAccessConfig,
     ) -> Result<Self, CredentialCipherError> {
-        let cipher = ProviderKafkaCredentialCipher::from_environment(
-            &provider_kafka.master_key_environment_variable,
-            provider_kafka.encryption_key_version.clone(),
-        )?;
+        let cipher = ProviderKafkaCredentialCipher::from_config(provider_kafka_access)?;
         let bootstrap_servers = kafka
             .bootstrap_servers
             .split(',')
@@ -139,7 +136,6 @@ impl ProviderKafkaCredentialFactory {
             security_protocol: self.security_protocol.clone(),
             sasl_mechanism: self.sasl_mechanism.clone(),
             bootstrap_servers: self.bootstrap_servers.clone(),
-            security_cert: self.security_cert.clone(),
         })
     }
 
@@ -172,6 +168,27 @@ impl ProviderKafkaCredentialFactory {
 }
 
 impl ProviderKafkaCredentialCipher {
+    pub fn from_config(
+        provider_kafka_access: &ProviderKafkaAccessConfig,
+    ) -> Result<Self, CredentialCipherError> {
+        let encoded = match provider_kafka_access.master_key_source.trim() {
+            "env" => std::env::var(provider_kafka_access.master_key_environment_variable.trim())
+                .map_err(|_| CredentialCipherError::Configuration)?,
+            "file" => {
+                let path = provider_kafka_access
+                    .master_key_file
+                    .as_deref()
+                    .ok_or(CredentialCipherError::Configuration)?;
+                std::fs::read_to_string(path).map_err(|_| CredentialCipherError::Configuration)?
+            }
+            _ => return Err(CredentialCipherError::Configuration),
+        };
+        Self::from_hex_key(
+            encoded.trim(),
+            provider_kafka_access.encryption_key_version.clone(),
+        )
+    }
+
     pub fn from_environment(
         variable_name: &str,
         key_version: String,
@@ -299,6 +316,8 @@ fn encode_hex(value: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::ProviderKafkaAccessConfig;
+
     use super::{ProviderKafkaCredentialCipher, SecretBytes};
     use uuid::Uuid;
 
@@ -324,5 +343,45 @@ mod tests {
                 .decrypt(Uuid::new_v4(), 1, "test-v1", &encrypted)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn credential_cipher_loads_master_key_from_file_source() {
+        let path = std::env::temp_dir().join(format!(
+            "wurzburg-provider-kafka-key-{}.hex",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&path, format!("{}\n", "22".repeat(32))).unwrap();
+        let config = ProviderKafkaAccessConfig {
+            enabled: true,
+            worker_id: "test-worker".to_string(),
+            batch_size: 1,
+            poll_interval_ms: 1,
+            lease_duration_ms: 1,
+            max_attempts: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+            master_key_source: "file".to_string(),
+            master_key_environment_variable: "UNUSED_PROVIDER_KAFKA_TEST_KEY".to_string(),
+            master_key_file: Some(path.to_string_lossy().into_owned()),
+            encryption_key_version: "file-v1".to_string(),
+            scram_iterations: 8192,
+        };
+
+        let cipher = ProviderKafkaCredentialCipher::from_config(&config).unwrap();
+        let provider_id = Uuid::new_v4();
+        let encrypted = cipher
+            .encrypt(provider_id, 1, &SecretBytes::new(b"file-secret".to_vec()))
+            .unwrap();
+
+        assert_eq!(
+            cipher
+                .decrypt(provider_id, 1, "file-v1", &encrypted)
+                .unwrap()
+                .expose(),
+            b"file-secret"
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 }

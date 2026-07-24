@@ -199,6 +199,7 @@ card.transactions:read
 
 platform.providers:read
 platform.providers:write
+platform.audit:read
 platform.card_ranges:read
 platform.card_ranges:write
 platform.policies:read
@@ -231,6 +232,8 @@ without the route scope is insufficient.
 Route group                                  Required scope
 -----------------------------------------------------------------------------
 Provider list/detail/lifecycle/admin         platform.providers:read/write
+Provider four-account live ledger            platform.providers:read
+Immutable audit-log query                    platform.audit:read
 Provider contacts/operational profile        platform.providers:read/write
 Provider range attachment                    platform.card_ranges:write
 Card-range and range-control reads           platform.card_ranges:read

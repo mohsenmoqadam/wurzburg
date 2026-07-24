@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/money_movement.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:money_movement",
   "type": "object",
   "additionalProperties": false,
   "required": ["currency", "amount_rials", "observed_remaining_credit_rials", "balance_observed_at", "initiated_by"],

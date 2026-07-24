@@ -50,6 +50,7 @@ const FULL_ACCESS_SCOPES: &[&str] = &[
     "card.transactions:read",
     "platform.providers:read",
     "platform.providers:write",
+    "platform.audit:read",
     "platform.card_ranges:read",
     "platform.card_ranges:write",
     "platform.policies:read",

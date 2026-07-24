@@ -112,9 +112,9 @@ user_account_code = 200
 system_account_code = 300
 transfer_code = 1
 
-[provider_provisioning]
+[provider_core_provisioning]
 enabled = true
-worker_id = "wurzburg-provider-provisioning"
+worker_id = "wurzburg-provider-core-provisioning"
 batch_size = 10
 poll_interval_ms = 500
 lease_duration_ms = 30000
@@ -122,16 +122,18 @@ max_attempts = 20
 initial_backoff_ms = 500
 max_backoff_ms = 60000
 
-[provider_kafka]
-enabled = false
-worker_id = "wurzburg-provider-kafka-provisioning"
+[provider_kafka_access]
+enabled = true
+worker_id = "wurzburg-provider-kafka-access-provisioning"
 batch_size = 10
 poll_interval_ms = 500
 lease_duration_ms = 45000
 max_attempts = 20
 initial_backoff_ms = 500
 max_backoff_ms = 60000
+master_key_source = "file"
 master_key_environment_variable = "WURZBURG_PROVIDER_KAFKA_MASTER_KEY_HEX"
+master_key_file = "/home/mohsen/Codes/war/wurzburg/secrets/provider-kafka-master-key.hex"
 encryption_key_version = "v1"
 scram_iterations = 8192
 

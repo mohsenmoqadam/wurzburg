@@ -17,8 +17,8 @@ pub struct Settings {
     pub kafka: KafkaConfig,
     pub validation: ValidationConfig,
     pub tigerbeetle: TigerBeetleConfig,
-    pub provider_provisioning: ProviderProvisioningConfig,
-    pub provider_kafka: ProviderKafkaConfig,
+    pub provider_core_provisioning: ProviderCoreProvisioningConfig,
+    pub provider_kafka_access: ProviderKafkaAccessConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -197,7 +197,7 @@ pub struct TigerBeetleConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct ProviderProvisioningConfig {
+pub struct ProviderCoreProvisioningConfig {
     pub enabled: bool,
     pub worker_id: String,
     pub batch_size: u16,
@@ -209,7 +209,7 @@ pub struct ProviderProvisioningConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct ProviderKafkaConfig {
+pub struct ProviderKafkaAccessConfig {
     pub enabled: bool,
     pub worker_id: String,
     pub batch_size: u16,
@@ -218,18 +218,20 @@ pub struct ProviderKafkaConfig {
     pub max_attempts: u32,
     pub initial_backoff_ms: u64,
     pub max_backoff_ms: u64,
+    pub master_key_source: String,
     pub master_key_environment_variable: String,
+    pub master_key_file: Option<String>,
     pub encryption_key_version: String,
     pub scram_iterations: i32,
 }
 
-impl ProviderKafkaConfig {
+impl ProviderKafkaAccessConfig {
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms)
     }
 }
 
-impl ProviderProvisioningConfig {
+impl ProviderCoreProvisioningConfig {
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms)
     }
@@ -281,25 +283,42 @@ impl Settings {
             .try_deserialize()
             .context("Failed to deserialize configuration")?;
         settings.kafka.validate()?;
-        if settings.provider_kafka.enabled {
+        if settings.provider_kafka_access.enabled {
+            let master_key_source = settings.provider_kafka_access.master_key_source.trim();
             anyhow::ensure!(
-                !settings
-                    .provider_kafka
-                    .master_key_environment_variable
-                    .trim()
-                    .is_empty(),
-                "Provider Kafka master-key environment variable is required"
+                matches!(master_key_source, "env" | "file"),
+                "Provider Kafka master key source must be either 'env' or 'file'"
             );
+            if master_key_source == "env" {
+                anyhow::ensure!(
+                    !settings
+                        .provider_kafka_access
+                        .master_key_environment_variable
+                        .trim()
+                        .is_empty(),
+                    "Provider Kafka master-key environment variable is required"
+                );
+            }
+            if master_key_source == "file" {
+                anyhow::ensure!(
+                    settings
+                        .provider_kafka_access
+                        .master_key_file
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "Provider Kafka master-key file is required"
+                );
+            }
             anyhow::ensure!(
                 !settings
-                    .provider_kafka
+                    .provider_kafka_access
                     .encryption_key_version
                     .trim()
                     .is_empty(),
                 "Provider Kafka encryption key version is required"
             );
             anyhow::ensure!(
-                settings.provider_kafka.scram_iterations >= 4096,
+                settings.provider_kafka_access.scram_iterations >= 4096,
                 "Provider Kafka SCRAM iterations must be at least 4096"
             );
             anyhow::ensure!(
@@ -321,7 +340,7 @@ impl Settings {
                 "Provider Kafka administration password is required"
             );
             anyhow::ensure!(
-                settings.provider_kafka.max_attempts > 0,
+                settings.provider_kafka_access.max_attempts > 0,
                 "Provider Kafka max attempts must be positive"
             );
         }

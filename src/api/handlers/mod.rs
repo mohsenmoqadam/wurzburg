@@ -1,3 +1,4 @@
+pub mod audit_logs;
 pub mod card_policies;
 pub mod card_ranges;
 pub mod provider_events;

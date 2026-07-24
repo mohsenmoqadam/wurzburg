@@ -26,7 +26,7 @@ async fn replaces_and_replays_complete_provider_event_subscription_set() {
     }
     support::init_test_tracing();
     let mut settings = Settings::new().expect("integration settings should load");
-    settings.provider_kafka.enabled = false;
+    settings.provider_kafka_access.enabled = false;
     prepare_oracle_schema(&settings.database, &settings.migrations)
         .await
         .expect("Oracle schema should be prepared before scenarios run");
@@ -63,6 +63,31 @@ async fn replaces_and_replays_complete_provider_event_subscription_set() {
     let catalog_json: serde_json::Value = serde_json::from_str(&catalog.1).unwrap();
     assert_eq!(catalog_json["data"].as_array().unwrap().len(), 9);
     assert!(!catalog.1.contains("INTERNAL"));
+    let credit_contract_url = catalog_json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["event_type"] == "CREDIT_GRANTED")
+        .unwrap()["contract_docs_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let credit_contract = get(&client, address, &credit_contract_url).await;
+    assert_eq!(
+        credit_contract.0,
+        reqwest::StatusCode::OK,
+        "{}",
+        credit_contract.1
+    );
+    let credit_contract_json: serde_json::Value = serde_json::from_str(&credit_contract.1).unwrap();
+    assert_eq!(credit_contract_json["event_type"], "CREDIT_GRANTED");
+    assert_eq!(credit_contract_json["schema_version"], 1);
+    assert_eq!(
+        credit_contract_json["schema"]["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+    assert!(!credit_contract.1.contains("traceparent"));
+    assert!(!credit_contract.1.contains("national_id"));
 
     let before = get(
         &client,
@@ -126,7 +151,7 @@ async fn replaces_and_replays_complete_provider_event_subscription_set() {
 }
 
 async fn start_server(mut settings: Settings) -> std::net::SocketAddr {
-    settings.provider_provisioning.enabled = false;
+    settings.provider_core_provisioning.enabled = false;
     let state = Arc::new(AppState::new(settings).await.unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.kafka.outbox_relay.clone(),
     );
     let receipt_consumer = start_receipt_consumer(app_state.db.clone(), settings.kafka.clone())?;
-    let provider_provisioning = start_provider_provisioning_worker(
+    let provider_core_provisioning = start_provider_provisioning_worker(
         app_state.db.clone(),
         ProviderService::new(
             app_state.db.clone(),
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             settings.tigerbeetle.clone(),
             app_state.provider_kafka_credentials.clone(),
         ),
-        settings.provider_provisioning.clone(),
+        settings.provider_core_provisioning.clone(),
     );
     let provider_kafka_provisioning = match app_state.provider_kafka_credentials.clone() {
         Some(credentials) => start_provider_kafka_provisioning_worker(
@@ -55,9 +55,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app_state.db.clone(),
                 app_state.kafka_admin.clone(),
                 credentials,
-                settings.provider_kafka.scram_iterations,
+                settings.provider_kafka_access.scram_iterations,
             ),
-            settings.provider_kafka.clone(),
+            settings.provider_kafka_access.clone(),
         ),
         None => None,
     };
@@ -99,8 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(receipt_consumer) = receipt_consumer {
         receipt_consumer.shutdown().await;
     }
-    if let Some(provider_provisioning) = provider_provisioning {
-        provider_provisioning.shutdown().await;
+    if let Some(provider_core_provisioning) = provider_core_provisioning {
+        provider_core_provisioning.shutdown().await;
     }
     if let Some(provider_kafka_provisioning) = provider_kafka_provisioning {
         provider_kafka_provisioning.shutdown().await;

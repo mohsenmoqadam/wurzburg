@@ -22,11 +22,11 @@ async fn rejects_invalid_concurrent_and_cross_provider_subscription_commands() {
         return;
     }
     let mut settings = Settings::new().expect("integration settings should load");
-    settings.provider_kafka.enabled = false;
+    settings.provider_kafka_access.enabled = false;
     prepare_oracle_schema(&settings.database, &settings.migrations)
         .await
         .expect("Oracle schema should be prepared before scenarios run");
-    settings.provider_provisioning.enabled = false;
+    settings.provider_core_provisioning.enabled = false;
     let state = Arc::new(AppState::new(settings).await.unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

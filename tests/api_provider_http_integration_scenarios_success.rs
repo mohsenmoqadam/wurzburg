@@ -15,8 +15,8 @@ use wurzburg::{
 
 /// Scenario goal: create a Provider through the real HTTP/WSO2 boundary and
 /// prove the Oracle command, audit, idempotency replay, and all four live
-/// TigerBeetle account contracts. Kafka provisioning is disabled in this
-/// focused scenario and is covered by its dedicated real-broker scenario.
+/// TigerBeetle account contracts. Kafka provisioning may still be pending in
+/// the create response and is covered by its dedicated real-broker scenario.
 #[tokio::test]
 async fn creates_and_replays_provider_with_four_verified_accounts() {
     if env::var("RUN_FULL_INTEGRATION_TESTS").ok().as_deref() != Some("1") {
@@ -56,7 +56,10 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     let created: serde_json::Value = serde_json::from_str(&response_body).unwrap();
     assert_eq!(created["status"], "READY");
     assert_eq!(created["core_provisioning_status"], "SUCCEEDED");
-    assert_eq!(created["kafka_provisioning_status"], "DISABLED");
+    assert!(matches!(
+        created["kafka_provisioning_status"].as_str(),
+        Some("PENDING" | "SUCCEEDED")
+    ));
     let provider_id = Uuid::parse_str(created["provider_id"].as_str().unwrap()).unwrap();
 
     let (activate_status, activate_body) = post_json(
@@ -72,6 +75,77 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&activate_body).unwrap()["status"],
         "ACTIVE"
+    );
+
+    // Provider collection reads are Oracle-only and use opaque keyset tokens.
+    // They remain available independently of TigerBeetle read health.
+    let (list_status, list_body) = get_json(
+        &client,
+        address,
+        "/api/v1/providers?status=ACTIVE&page_size=200",
+        "provider-list",
+    )
+    .await;
+    assert_eq!(list_status, reqwest::StatusCode::OK, "{list_body}");
+    let listed: serde_json::Value = serde_json::from_str(&list_body).unwrap();
+    assert!(
+        listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["provider_id"] == provider_id.to_string())
+    );
+
+    // Financial values are fetched live from TigerBeetle in one batch. Oracle
+    // contributes account identity/category mappings only.
+    let (ledger_status, ledger_body) = get_json(
+        &client,
+        address,
+        &format!("/api/v1/providers/{provider_id}/ledger"),
+        "provider-ledger-read",
+    )
+    .await;
+    assert_eq!(ledger_status, reqwest::StatusCode::OK, "{ledger_body}");
+    let ledger: serde_json::Value = serde_json::from_str(&ledger_body).unwrap();
+    assert_eq!(ledger["currency"], "IRR");
+    assert_eq!(ledger["accounts"].as_array().unwrap().len(), 4);
+    for account in ledger["accounts"].as_array().unwrap() {
+        assert_eq!(account["posted_balance"], "0");
+        assert_eq!(account["effective_balance"], "0");
+        assert!(account["tigerbeetle_account_id"].is_string());
+    }
+
+    // One Provider has multiple immutable audit entries. A page size of one
+    // proves keyset pagination and filter-bound token generation.
+    let (audit_status, audit_body) = get_json(
+        &client,
+        address,
+        &format!(
+            "/api/v1/admin/audit-logs?entity_type=PROVIDER&entity_id={provider_id}&page_size=1"
+        ),
+        "provider-audit-list",
+    )
+    .await;
+    assert_eq!(audit_status, reqwest::StatusCode::OK, "{audit_body}");
+    let audit: serde_json::Value = serde_json::from_str(&audit_body).unwrap();
+    assert_eq!(audit["data"].as_array().unwrap().len(), 1);
+    let next_page_token = audit["next_page_token"].as_str().unwrap();
+    let (next_status, next_body) = get_json(
+        &client,
+        address,
+        &format!(
+            "/api/v1/admin/audit-logs?entity_type=PROVIDER&entity_id={provider_id}&page_size=1&page_token={next_page_token}"
+        ),
+        "provider-audit-list-next-page",
+    )
+    .await;
+    assert_eq!(next_status, reqwest::StatusCode::OK, "{next_body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&next_body).unwrap()["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
 
     // Card facts: a DRAFT range and policy are created through their public
@@ -239,6 +313,27 @@ async fn post_json(
         .unwrap();
     let status = response.status();
     let text = response.text().await.unwrap();
+    (status, text)
+}
+
+async fn get_json(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    path: &str,
+    correlation: &str,
+) -> (reqwest::StatusCode, String) {
+    let response = client
+        .get(format!("http://{address}{path}"))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("X-Correlation-Id", correlation)
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .expect("read HTTP request should complete");
+    let status = response.status();
+    let text = response.text().await.expect("read response should read");
     (status, text)
 }
 

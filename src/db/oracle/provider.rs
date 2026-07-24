@@ -20,6 +20,7 @@ use crate::{
         idempotency::IdempotencyStatus,
         provider::{
             NewProvider, Provider, ProviderAccountCategory, ProviderKafkaProvisioningStatus,
+            ProviderListCursor, ProviderListItem, ProviderListPage, ProviderListQuery,
             ProviderStatus,
         },
     },
@@ -38,6 +39,7 @@ pub enum CreateProviderPersistenceOutcome {
 pub struct ProviderLedgerAccountMapping {
     pub category: ProviderAccountCategory,
     pub tigerbeetle_account_id: Uuid,
+    pub status: String,
 }
 
 impl OracleRepository {
@@ -131,6 +133,56 @@ impl OracleRepository {
             .await
     }
 
+    #[tracing::instrument(skip(self, query), fields(db.system="oracle", db.operation.name="providers.list"))]
+    pub async fn list_providers(&self, query: ProviderListQuery) -> DbResult<ProviderListPage> {
+        self.pool
+            .with_connection(move |connection| {
+                let status = query.status.map(|value| value.as_db_value().to_string());
+                let cursor_created_at = query
+                    .cursor
+                    .as_ref()
+                    .map(|cursor| format_oracle_utc(cursor.created_at));
+                let cursor_id = query
+                    .cursor
+                    .as_ref()
+                    .map(|cursor| uuid_to_raw16(cursor.provider_id).to_vec());
+                let fetch_limit = i64::from(query.limit) + 1;
+                let page_limit = query.limit as usize;
+                let bind_params: &[(&str, &dyn oracle::sql_type::ToSql)] = &[
+                    ("status", &status),
+                    ("tax_id", &query.tax_id),
+                    ("cursor_created_at", &cursor_created_at),
+                    ("cursor_id", &cursor_id),
+                    ("fetch_limit", &fetch_limit),
+                ];
+                let rows = connection
+                    .query_named(provider_list_sql(), bind_params)
+                    .map_err(|error| {
+                        DbError::Query(format!("failed to list providers: {error}"))
+                    })?;
+                let mut items = Vec::new();
+                for row in rows {
+                    let row = row.map_err(|error| {
+                        DbError::Query(format!("failed to read listed provider row: {error}"))
+                    })?;
+                    items.push(map_provider_list_row(&row)?);
+                }
+                let has_next_page = items.len() > page_limit;
+                if has_next_page {
+                    items.truncate(page_limit);
+                }
+                let next_cursor = has_next_page.then(|| {
+                    let item = items.last().expect("non-empty paginated provider page");
+                    ProviderListCursor {
+                        created_at: item.created_at,
+                        provider_id: item.provider_id,
+                    }
+                });
+                Ok(ProviderListPage { items, next_cursor })
+            })
+            .await
+    }
+
     #[tracing::instrument(skip(self), fields(db.system="oracle", db.operation.name="provider_ledger_accounts.list", provider_id=%provider_id))]
     pub async fn get_provider_ledger_mappings(
         &self,
@@ -140,7 +192,7 @@ impl OracleRepository {
             .with_connection(move |connection| {
                 let rows = connection
                     .query(
-                        "SELECT account_category,tigerbeetle_account_id FROM provider_ledger_accounts WHERE provider_id=:1 ORDER BY account_category",
+                        "SELECT account_category,tigerbeetle_account_id,status FROM provider_ledger_accounts WHERE provider_id=:1 ORDER BY account_category",
                         &[&uuid_to_raw16(provider_id).to_vec()],
                     )
                     .map_err(|error| DbError::Query(format!("failed to list provider ledger mappings: {error}")))?;
@@ -151,6 +203,7 @@ impl OracleRepository {
                     Ok(ProviderLedgerAccountMapping {
                         category: ProviderAccountCategory::from_db_value(&category).ok_or_else(|| DbError::Query("unknown provider account category".to_string()))?,
                         tigerbeetle_account_id: raw16_to_uuid(&account_id)?,
+                        status: row.get(2).map_err(read_error)?,
                     })
                 }).collect()
             })
@@ -295,8 +348,8 @@ fn insert_kafka_access(connection: &oracle::Connection, provider: &NewProvider) 
         DbError::Query("Kafka credential version exceeds Oracle NUMBER".to_string())
     })?;
     connection.execute(
-        "INSERT INTO provider_kafka_access (provider_kafka_access_id,provider_id,topic_name,username,consumer_group,security_protocol,sasl_mechanism,bootstrap_servers_json,security_cert,credential_status) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,:9,'PROVISIONING')",
-        &[&uuid_to_raw16(access.provider_kafka_access_id).to_vec(), &uuid_to_raw16(provider.provider_id).to_vec(), &access.topic_name, &access.username, &access.consumer_group, &access.security_protocol, &access.sasl_mechanism, &brokers, &access.security_cert],
+        "INSERT INTO provider_kafka_access (provider_kafka_access_id,provider_id,topic_name,username,consumer_group,security_protocol,sasl_mechanism,bootstrap_servers_json,credential_status) VALUES (:1,:2,:3,:4,:5,:6,:7,:8,'PROVISIONING')",
+        &[&uuid_to_raw16(access.provider_kafka_access_id).to_vec(), &uuid_to_raw16(provider.provider_id).to_vec(), &access.topic_name, &access.username, &access.consumer_group, &access.security_protocol, &access.sasl_mechanism, &brokers],
     ).map_err(|error| DbError::Query(format!("failed to insert provider Kafka access: {error}")))?;
     connection.execute(
         "INSERT INTO provider_kafka_credentials (provider_kafka_credential_id,provider_kafka_access_id,provider_id,credential_version,password_ciphertext,encryption_key_version,status) VALUES (:1,:2,:3,:4,:5,:6,'CANDIDATE')",
@@ -365,6 +418,44 @@ pub(crate) fn fetch_provider_for_command(
 
 fn provider_select_sql() -> &'static str {
     "SELECT provider_id,legal_name,trade_name,tax_id,registration_number,email_address,website_url,mailing_address,status,JSON_SERIALIZE(metadata_json RETURNING CLOB),TO_CHAR(SYS_EXTRACT_UTC(created_at),'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'),TO_CHAR(SYS_EXTRACT_UTC(updated_at),'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"') FROM providers WHERE provider_id=:1"
+}
+
+fn provider_list_sql() -> &'static str {
+    r#"
+    SELECT provider_id, legal_name, trade_name, tax_id, status,
+           TO_CHAR(SYS_EXTRACT_UTC(created_at),'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'),
+           TO_CHAR(SYS_EXTRACT_UTC(updated_at),'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"')
+    FROM providers
+    WHERE (:status IS NULL OR status = :status)
+      AND (:tax_id IS NULL OR tax_id = :tax_id)
+      AND (
+          :cursor_created_at IS NULL
+          OR SYS_EXTRACT_UTC(created_at) < TO_TIMESTAMP(:cursor_created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"')
+          OR (
+              SYS_EXTRACT_UTC(created_at) = TO_TIMESTAMP(:cursor_created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"')
+              AND provider_id < :cursor_id
+          )
+      )
+    ORDER BY created_at DESC, provider_id DESC
+    FETCH FIRST :fetch_limit ROWS ONLY
+    "#
+}
+
+fn map_provider_list_row(row: &Row) -> DbResult<ProviderListItem> {
+    let provider_id: Vec<u8> = row.get(0).map_err(read_error)?;
+    let status: String = row.get(4).map_err(read_error)?;
+    let created_at: String = row.get(5).map_err(read_error)?;
+    let updated_at: String = row.get(6).map_err(read_error)?;
+    Ok(ProviderListItem {
+        provider_id: raw16_to_uuid(&provider_id)?,
+        legal_name: row.get(1).map_err(read_error)?,
+        trade_name: row.get(2).map_err(read_error)?,
+        tax_id: row.get(3).map_err(read_error)?,
+        status: ProviderStatus::from_db_value(&status)
+            .ok_or_else(|| DbError::Query("unknown provider status".to_string()))?,
+        created_at: parse_utc(&created_at)?,
+        updated_at: parse_utc(&updated_at)?,
+    })
 }
 
 fn provider_kafka_status(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<String> {
@@ -450,6 +541,25 @@ fn parse_utc(value: &str) -> DbResult<DateTime<Utc>> {
         .with_timezone(&Utc))
 }
 
+fn format_oracle_utc(value: DateTime<Utc>) -> String {
+    value.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
 fn read_error(error: oracle::Error) -> DbError {
     DbError::Query(format!("failed to read Oracle provider row: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_list_sql;
+
+    #[test]
+    fn provider_list_uses_bound_filters_and_descending_keyset_order() {
+        let sql = provider_list_sql();
+        assert!(sql.contains(":status IS NULL"));
+        assert!(sql.contains(":tax_id IS NULL"));
+        assert!(sql.contains("provider_id < :cursor_id"));
+        assert!(sql.contains("ORDER BY created_at DESC, provider_id DESC"));
+        assert!(sql.contains("FETCH FIRST :fetch_limit ROWS ONLY"));
+    }
 }

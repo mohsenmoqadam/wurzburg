@@ -212,7 +212,6 @@ pub struct NewProviderKafkaAccess {
     pub security_protocol: String,
     pub sasl_mechanism: String,
     pub bootstrap_servers: Vec<String>,
-    pub security_cert: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,6 +311,50 @@ pub struct Provider {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub kafka_provisioning_status: ProviderKafkaProvisioningStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderListItem {
+    pub provider_id: Uuid,
+    pub legal_name: String,
+    pub trade_name: String,
+    pub tax_id: Option<String>,
+    pub status: ProviderStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderListCursor {
+    pub created_at: DateTime<Utc>,
+    pub provider_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderListQuery {
+    pub status: Option<ProviderStatus>,
+    pub tax_id: Option<String>,
+    pub limit: u32,
+    pub cursor: Option<ProviderListCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderListPage {
+    pub items: Vec<ProviderListItem>,
+    pub next_cursor: Option<ProviderListCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderLedgerAccountBalance {
+    pub account_category: ProviderAccountCategory,
+    pub tigerbeetle_account_id: Uuid,
+    pub debits_posted: String,
+    pub credits_posted: String,
+    pub debits_pending: String,
+    pub credits_pending: String,
+    pub posted_balance: String,
+    pub effective_balance: String,
+    pub status: String,
 }
 
 impl Provider {

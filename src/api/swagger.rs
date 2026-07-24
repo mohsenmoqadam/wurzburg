@@ -1,21 +1,24 @@
 use axum::Router;
 use serde_json::json;
+use utoipa::openapi::Required;
 use utoipa::openapi::ServerBuilder;
 use utoipa::openapi::path::{Operation, Parameter, ParameterBuilder, ParameterIn, PathItem};
 use utoipa::openapi::schema::{ObjectBuilder, Type};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::openapi::Required;
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use super::handlers::{card_policies, card_ranges, provider_events, providers, system};
+use super::handlers::{audit_logs, card_policies, card_ranges, provider_events, providers, system};
 
 #[derive(OpenApi)]
 #[openapi(
     modifiers(&SecurityAddon),
     paths(
             providers::create_provider,
+            providers::list_providers,
             providers::get_provider,
+            providers::get_provider_ledger,
+            audit_logs::list_audit_logs,
             providers::get_provider_kafka_credentials,
             providers::get_provider_kafka_status,
             providers::get_provider_kafka_certificate,
@@ -24,6 +27,7 @@ use super::handlers::{card_policies, card_ranges, provider_events, providers, sy
             providers::suspend_provider_kafka,
             providers::resume_provider_kafka,
             provider_events::list_provider_event_types,
+            provider_events::get_provider_event_contract,
             provider_events::get_admin_provider_event_subscriptions,
             provider_events::get_provider_event_subscriptions,
             provider_events::replace_provider_event_subscriptions,
@@ -63,6 +67,11 @@ use super::handlers::{card_policies, card_ranges, provider_events, providers, sy
             providers::ProviderWeekdayDto,
             providers::ProviderStatusDto,
             providers::ProviderResponse,
+            providers::ListProvidersQuery,
+            providers::ProviderListItemResponse,
+            providers::ListProvidersResponse,
+            providers::ProviderLedgerResponse,
+            providers::ProviderLedgerAccountResponse,
             providers::ProviderCoreProvisioningStatusDto,
             providers::ProviderKafkaProvisioningStatusDto,
             providers::AssignProviderCardRangeRequest,
@@ -74,9 +83,13 @@ use super::handlers::{card_policies, card_ranges, provider_events, providers, sy
             providers::ProviderKafkaCertificateResponse,
             providers::ProviderKafkaCommandRequest,
             providers::ProviderKafkaCommandResponse,
+            audit_logs::ListAuditLogsQuery,
+            audit_logs::AuditLogResponse,
+            audit_logs::ListAuditLogsResponse,
             provider_events::ProviderEventTypeDto,
             provider_events::ProviderEventTypeCatalogResponse,
             provider_events::ProviderEventTypeCatalogItem,
+            provider_events::ProviderEventContractResponse,
             provider_events::ReplaceProviderEventSubscriptionsRequest,
             provider_events::ProviderEventSubscriptionInput,
             provider_events::ProviderEventSubscriptionsResponse,
@@ -116,6 +129,7 @@ use super::handlers::{card_policies, card_ranges, provider_events, providers, sy
     ),
     tags(
         (name = "Providers", description = "Platform-admin provider lifecycle and provisioning APIs"),
+        (name = "Audit", description = "Platform-admin immutable business audit queries"),
         (name = "Provider Events", description = "Provider event catalog and delivery subscription controls"),
         (name = "Card Ranges", description = "Platform-admin card range control APIs"),
         (name = "Card Policies", description = "Platform-admin range policy APIs"),

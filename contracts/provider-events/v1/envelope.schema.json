@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/envelope.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:envelope",
   "title": "Wurzburg Provider Event Envelope v1",
   "type": "object",
   "additionalProperties": false,

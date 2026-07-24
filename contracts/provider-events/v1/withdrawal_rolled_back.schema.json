@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/withdrawal_rolled_back.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:withdrawal_rolled_back",
   "allOf": [
-    { "$ref": "envelope.schema.json" },
-    { "properties": { "event_type": { "const": "WITHDRAWAL_ROLLED_BACK" }, "data": { "$ref": "withdrawal.schema.json" } } }
+    { "$ref": "urn:wurzburg:provider-events:v1:envelope" },
+    { "properties": { "event_type": { "const": "WITHDRAWAL_ROLLED_BACK" }, "data": { "$ref": "urn:wurzburg:provider-events:v1:withdrawal" } } }
   ]
 }

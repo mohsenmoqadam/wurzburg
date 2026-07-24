@@ -189,8 +189,22 @@ CREATE TABLE runtime_materialization_receipts (
     )
 );
 
-CREATE INDEX idx_audit_entity ON audit_logs(entity_type, entity_id);
-CREATE INDEX idx_audit_correlation ON audit_logs(correlation_id);
+CREATE INDEX idx_audit_created
+    ON audit_logs(created_at, audit_log_id);
+CREATE INDEX idx_audit_entity
+    ON audit_logs(entity_type, entity_id, created_at, audit_log_id);
+CREATE INDEX idx_audit_action
+    ON audit_logs(action_type, created_at, audit_log_id);
+CREATE INDEX idx_audit_actor
+    ON audit_logs(actor_subject, created_at, audit_log_id);
+CREATE INDEX idx_audit_actor_provider
+    ON audit_logs(actor_provider_id, created_at, audit_log_id);
+CREATE INDEX idx_audit_actor_user
+    ON audit_logs(actor_user_id, created_at, audit_log_id);
+CREATE INDEX idx_audit_correlation
+    ON audit_logs(correlation_id, created_at, audit_log_id);
+CREATE INDEX idx_audit_request
+    ON audit_logs(request_id, created_at, audit_log_id);
 CREATE INDEX idx_idempotency_resource ON idempotency_records(resource_type, resource_id);
 CREATE INDEX idx_operation_wal_lease ON operation_wal(status, next_attempt_at, locked_until);
 CREATE INDEX idx_outbox_lease ON integration_outbox(status, next_attempt_at, locked_until);

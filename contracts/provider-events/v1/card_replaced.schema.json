@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/card_replaced.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:card_replaced",
   "allOf": [
-    { "$ref": "envelope.schema.json" },
+    { "$ref": "urn:wurzburg:provider-events:v1:envelope" },
     { "properties": { "event_type": { "const": "CARD_REPLACED" }, "data": { "type": "object", "additionalProperties": false, "required": ["replacement_mode"], "properties": { "replacement_mode": { "enum": ["SAME_PAN_REPRINT", "NEW_PAN"] }, "previous_masked_card_number": { "type": "string", "pattern": "^[0-9]{6}\\*{6}[0-9]{4}$" } } } } }
   ]
 }

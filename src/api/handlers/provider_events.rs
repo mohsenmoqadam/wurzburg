@@ -53,7 +53,14 @@ pub struct ProviderEventTypeCatalogResponse {
 pub struct ProviderEventTypeCatalogItem {
     pub event_type: ProviderEventTypeDto,
     pub schema_versions: Vec<u16>,
-    pub contract_artifact: String,
+    pub contract_docs_url: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ProviderEventContractResponse {
+    pub event_type: ProviderEventTypeDto,
+    pub schema_version: u16,
+    pub schema: serde_json::Value,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -106,12 +113,44 @@ pub async fn list_provider_event_types(
                 .map(|event_type| ProviderEventTypeCatalogItem {
                     event_type: event_type.into(),
                     schema_versions: vec![1],
-                    contract_artifact: format!(
-                        "contracts/provider-events/v1/{}.schema.json",
-                        event_type.as_str().to_ascii_lowercase()
-                    ),
+                    contract_docs_url: provider_event_contract_url(event_type, 1),
                 })
                 .collect(),
+        },
+    )
+}
+
+#[utoipa::path(get, path="/api/v1/admin/provider-event-types/{event_type}/schemas/{schema_version}", tag="Provider Events", params(("event_type"=String, Path), ("schema_version"=u16, Path)), responses((status=200, body=ProviderEventContractResponse), (status=403, body=crate::api::error::ApiErrorResponse), (status=404, body=crate::api::error::ApiErrorResponse)), security(("wso2_backend_bearer"=[])))]
+#[tracing::instrument(skip(state, headers), fields(event_type=%event_type, schema_version=%schema_version))]
+pub async fn get_provider_event_contract(
+    State(state): State<Arc<AppState>>,
+    Path((event_type, schema_version)): Path<(String, u16)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request =
+        extract_trusted_request_context(&headers, state.config.wso2.backend_token_transport)?;
+    let actor = extract_trusted_actor(&request, &state.config.wso2)?;
+    require_scope(&actor, "platform.provider_events:read")?;
+    let event_type = ProviderEventType::parse_name(&event_type)
+        .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderEventContractNotFound))?;
+    let schema = event_type
+        .schema_json(schema_version)
+        .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderEventContractNotFound))?;
+    let schema = serde_json::from_str(schema).map_err(|error| {
+        tracing::error!(
+            error = %error,
+            event_type = event_type.as_str(),
+            schema_version,
+            "provider event contract schema is invalid"
+        );
+        ApiError::new(WurzburgResultCode::SerializationError)
+    })?;
+    success_response(
+        StatusCode::OK,
+        ProviderEventContractResponse {
+            event_type: event_type.into(),
+            schema_version,
+            schema,
         },
     )
 }
@@ -241,6 +280,13 @@ fn response_from_set(value: ProviderEventSubscriptionSet) -> ProviderEventSubscr
             })
             .collect(),
     }
+}
+
+fn provider_event_contract_url(event_type: ProviderEventType, schema_version: u16) -> String {
+    format!(
+        "/api/v1/admin/provider-event-types/{}/schemas/{schema_version}",
+        event_type.as_str()
+    )
 }
 
 macro_rules! event_type_mapping {

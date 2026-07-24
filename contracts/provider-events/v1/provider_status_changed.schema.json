@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.wurzburg/provider-events/v1/provider_status_changed.schema.json",
+  "$id": "urn:wurzburg:provider-events:v1:provider_status_changed",
   "allOf": [
-    { "$ref": "envelope.schema.json" },
+    { "$ref": "urn:wurzburg:provider-events:v1:envelope" },
     { "properties": { "event_type": { "const": "PROVIDER_STATUS_CHANGED" }, "data": { "type": "object", "additionalProperties": false, "required": ["previous_status", "current_status"], "properties": { "previous_status": { "type": "string" }, "current_status": { "type": "string" }, "reason": { "type": "string", "maxLength": 1000 } } } } }
   ]
 }

@@ -35,7 +35,7 @@ async fn rejects_and_rolls_back_provider_failure_paths() {
 
     let mut settings = Settings::new().expect("full integration settings should load");
     settings.migrations.force_recreate = true;
-    settings.provider_provisioning.enabled = false;
+    settings.provider_core_provisioning.enabled = false;
     prepare_oracle_schema(&settings.database, &settings.migrations)
         .await
         .expect("Oracle schema should be rebuilt from the final baseline");
@@ -44,6 +44,41 @@ async fn rejects_and_rolls_back_provider_failure_paths() {
     let repository = state.db.clone();
     let address = start_server(state).await;
     let client = reqwest::Client::new();
+
+    let (status, body) = get_json(
+        &client,
+        address,
+        "/api/v1/providers?status=NOT_A_PROVIDER_STATUS",
+        "provider-list-invalid-status",
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("INVALID_PROVIDER_FILTER"));
+
+    let (status, body) = get_json(
+        &client,
+        address,
+        "/api/v1/admin/audit-logs?created_from=2026-07-25T00%3A00%3A00Z&created_to=2026-07-24T00%3A00%3A00Z",
+        "audit-list-invalid-range",
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("INVALID_AUDIT_LOG_FILTER"));
+
+    let response = client
+        .get(format!("http://{address}/api/v1/admin/audit-logs"))
+        .bearer_auth(support::signed_platform_admin_without_audit_scope())
+        .header("X-Correlation-Id", "audit-list-missing-scope")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, reqwest::StatusCode::FORBIDDEN, "{body}");
+    assert!(body.contains("MISSING_REQUIRED_SCOPE"));
 
     let initial_provider_count = count_all(&repository.pool, "providers").await;
     let invalid_key = Uuid::new_v4().to_string();
@@ -98,6 +133,16 @@ async fn rejects_and_rolls_back_provider_failure_paths() {
     seed_pending_provider(&repository.pool, provider_id, job_id, &provisioning_key).await;
     let ready_without_accounts_id = Uuid::new_v4();
     seed_ready_provider_without_accounts(&repository.pool, ready_without_accounts_id).await;
+
+    let (status, body) = get_json(
+        &client,
+        address,
+        &format!("/api/v1/providers/{ready_without_accounts_id}/ledger"),
+        "provider-ledger-incomplete-mapping",
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(body.contains("PROVIDER_LEDGER_UNAVAILABLE"));
 
     let (status, body) = post_json(
         &client,
@@ -267,6 +312,27 @@ async fn post_json(
     (status, body)
 }
 
+async fn get_json(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    path: &str,
+    correlation: &str,
+) -> (reqwest::StatusCode, String) {
+    let response = client
+        .get(format!("http://{address}{path}"))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("X-Correlation-Id", correlation)
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    (status, text)
+}
+
 fn provider_body(legal_name: &str) -> String {
     serde_json::json!({
         "legal_name": legal_name,
@@ -350,7 +416,7 @@ async fn install_terminal_audit_failure_trigger(pool: &OraclePool, provider_id: 
     install_trigger(
         pool,
         &format!(
-            "CREATE OR REPLACE TRIGGER test_fail_provider_terminal_audit BEFORE INSERT ON audit_logs FOR EACH ROW WHEN (NEW.correlation_id = 'provider-provisioning-{}-failed') BEGIN RAISE_APPLICATION_ERROR(-20012, 'forced provider terminal audit failure'); END;",
+            "CREATE OR REPLACE TRIGGER test_fail_provider_terminal_audit BEFORE INSERT ON audit_logs FOR EACH ROW WHEN (NEW.correlation_id = 'provider-core-provisioning-{}-failed') BEGIN RAISE_APPLICATION_ERROR(-20012, 'forced provider terminal audit failure'); END;",
             provider_id.simple()
         ),
     ).await;

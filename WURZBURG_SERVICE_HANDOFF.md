@@ -593,6 +593,12 @@ Graceful shutdown:
   logged or returned in generic errors.
 - Audit rows contain trusted actor/network context and immutable before/after
   business snapshots, not secrets or live balances.
+- Platform admins query immutable audit evidence through
+  `GET /api/v1/admin/audit-logs` using allowlisted exact filters and opaque,
+  filter-bound keyset pagination. Audit reads require `platform.audit:read`.
+- Before/after snapshots preserve safe business-state evidence but centrally
+  replace PAN, national ID, names, contacts, and unrestricted metadata with
+  `[REDACTED]` on write and again on read for legacy-row protection.
 - Provider-facing events are a strict public allowlist with versioned schemas;
   internal events cannot be subscribed accidentally.
 - Dependency errors are mapped to stable safe results; stack traces and raw

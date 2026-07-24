@@ -2378,8 +2378,9 @@ Get provider:
 GET /api/v1/providers/{provider_id}
 ```
 
-Provider detail includes live TigerBeetle account values and non-secret Kafka
-connection metadata:
+Provider detail returns canonical Oracle identity, lifecycle, and provisioning
+facts. Live financial values are deliberately separated so this endpoint does
+not become unavailable when TigerBeetle is temporarily unavailable:
 
 ```json
 {
@@ -2393,77 +2394,25 @@ connection metadata:
   "mailing_address": "Registered address",
   "status": "ACTIVE",
   "metadata": {},
-  "contacts": [],
-  "ledger_accounts": [
-    {
-      "account_category": "PROVIDER_OWNED",
-      "account_name": "Provider Owned",
-      "tigerbeetle_account_id": "uuid",
-      "debits_posted": "0",
-      "credits_posted": "0",
-      "debits_pending": "0",
-      "credits_pending": "0",
-      "posted_balance": "0",
-      "effective_balance": "0",
-      "status": "ACTIVE"
-    },
-    {
-      "account_category": "PROVIDER_FEE",
-      "account_name": "Provider Fee",
-      "tigerbeetle_account_id": "uuid",
-      "debits_posted": "0",
-      "credits_posted": "0",
-      "debits_pending": "0",
-      "credits_pending": "0",
-      "posted_balance": "0",
-      "effective_balance": "0",
-      "status": "ACTIVE"
-    },
-    {
-      "account_category": "CMS_SETTLEMENT",
-      "account_name": "CMS Settlement",
-      "tigerbeetle_account_id": "uuid",
-      "debits_posted": "0",
-      "credits_posted": "0",
-      "debits_pending": "0",
-      "credits_pending": "0",
-      "posted_balance": "0",
-      "effective_balance": "0",
-      "status": "ACTIVE"
-    },
-    {
-      "account_category": "PLATFORM_FEE",
-      "account_name": "Platform Fee",
-      "tigerbeetle_account_id": "uuid",
-      "debits_posted": "0",
-      "credits_posted": "0",
-      "debits_pending": "0",
-      "credits_pending": "0",
-      "posted_balance": "0",
-      "effective_balance": "0",
-      "status": "ACTIVE"
-    }
-  ],
-  "event_delivery": {
-    "global_enabled": true,
-    "platform_gate_enabled": true,
-    "effective_enabled": true,
-    "enabled_event_types": ["CREDIT_GRANTED", "CREDIT_RETURNED"],
-    "blocked_by": []
-  },
-  "kafka": {
-    "topic": "provider.events.4f3c2e1a0b9d4c7e8f6a123456789abc",
-    "brokers": ["host:port"],
-    "security_protocol": "SASL_SSL",
-    "sasl_mechanism": "SCRAM-SHA-512",
-    "username": "provider_user_4f3c2e1a0b9d4c7e8f6a123456789abc",
-    "consumer_group": "provider_group_4f3c2e1a0b9d4c7e8f6a123456789abc",
-    "credential_status": "ACTIVE"
-  },
+  "core_provisioning_status": "SUCCEEDED",
+  "kafka_provisioning_status": "SUCCEEDED",
   "created_at": "2026-07-14T00:00:00Z",
   "updated_at": "2026-07-14T00:00:00Z"
 }
 ```
+
+Live provider ledger:
+
+```text
+GET /api/v1/providers/{provider_id}/ledger
+```
+
+This endpoint batch-reads exactly `PROVIDER_OWNED`, `PROVIDER_FEE`,
+`CMS_SETTLEMENT`, and `PLATFORM_FEE` from TigerBeetle. It returns all four raw
+counters plus signed decimal-string `posted_balance` and `effective_balance` in
+IRR. Oracle stores only account UUID/category mappings. Missing accounts or an
+unavailable TigerBeetle dependency fail the whole request with
+`PROVIDER_LEDGER_UNAVAILABLE`; partial financial responses are forbidden.
 
 List providers:
 
@@ -2491,7 +2440,10 @@ Response:
 ```
 
 Provider lists never perform live TigerBeetle lookups. Ledger accounts and live
-balances are available from provider detail and dedicated ledger endpoints.
+balances are available only from the dedicated ledger endpoint.
+Page tokens are opaque, filter-bound keyset cursors ordered by
+`(created_at DESC, provider_id DESC)`; changing a filter while reusing a token
+is rejected.
 
 Update provider identity:
 

@@ -58,7 +58,6 @@ pub struct ProviderKafkaAccessRecord {
     pub security_protocol: String,
     pub sasl_mechanism: String,
     pub bootstrap_servers: Vec<String>,
-    pub security_cert: Option<String>,
     pub credential_status: String,
 }
 
@@ -621,7 +620,7 @@ fn fetch_access(
 ) -> DbResult<Option<ProviderKafkaAccessRecord>> {
     let provider_id_raw = uuid_to_raw16(provider_id).to_vec();
     let row = match connection.query_row(
-        "SELECT provider_kafka_access_id,provider_id,topic_name,username,consumer_group,security_protocol,sasl_mechanism,JSON_SERIALIZE(bootstrap_servers_json RETURNING CLOB),security_cert,credential_status FROM provider_kafka_access WHERE provider_id=:1",
+        "SELECT provider_kafka_access_id,provider_id,topic_name,username,consumer_group,security_protocol,sasl_mechanism,JSON_SERIALIZE(bootstrap_servers_json RETURNING CLOB),credential_status FROM provider_kafka_access WHERE provider_id=:1",
         &[&provider_id_raw],
     ) {
         Ok(row) => row,
@@ -647,8 +646,7 @@ fn fetch_access(
         bootstrap_servers: serde_json::from_str(&brokers).map_err(|_| {
             DbError::Query("invalid Provider Kafka broker configuration".to_string())
         })?,
-        security_cert: row.get(8).map_err(read_error)?,
-        credential_status: row.get(9).map_err(read_error)?,
+        credential_status: row.get(8).map_err(read_error)?,
     }))
 }
 

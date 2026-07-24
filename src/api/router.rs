@@ -4,7 +4,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::handlers::{card_policies, card_ranges, provider_events, providers, system};
+use super::handlers::{audit_logs, card_policies, card_ranges, provider_events, providers, system};
 use crate::telemetry::http::trace_http_request;
 use crate::{api::cors::manual_cors_middleware, state::AppState};
 
@@ -13,8 +13,16 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
     let system_routes = Router::new().route("/db-health", get(system::db_health));
 
     let api_router = Router::new()
-        .route("/providers", post(providers::create_provider))
+        .route(
+            "/providers",
+            post(providers::create_provider).get(providers::list_providers),
+        )
         .route("/providers/{provider_id}", get(providers::get_provider))
+        .route(
+            "/providers/{provider_id}/ledger",
+            get(providers::get_provider_ledger),
+        )
+        .route("/admin/audit-logs", get(audit_logs::list_audit_logs))
         .route(
             "/providers/{provider_id}/kafka/credentials",
             get(providers::get_provider_kafka_credentials),
@@ -50,6 +58,10 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
         .route(
             "/admin/provider-event-types",
             get(provider_events::list_provider_event_types),
+        )
+        .route(
+            "/admin/provider-event-types/{event_type}/schemas/{schema_version}",
+            get(provider_events::get_provider_event_contract),
         )
         .route(
             "/admin/providers/{provider_id}/event-subscriptions",

@@ -48,10 +48,13 @@ impl AppState {
         let kafka_producer = AppKafkaProducer::new(&config.kafka)?;
         let kafka_admin = AppKafkaAdmin::new(&config.kafka)?;
         let provider_kafka_credentials = config
-            .provider_kafka
+            .provider_kafka_access
             .enabled
             .then(|| {
-                ProviderKafkaCredentialFactory::from_config(&config.kafka, &config.provider_kafka)
+                ProviderKafkaCredentialFactory::from_config(
+                    &config.kafka,
+                    &config.provider_kafka_access,
+                )
             })
             .transpose()
             .map_err(|error| {

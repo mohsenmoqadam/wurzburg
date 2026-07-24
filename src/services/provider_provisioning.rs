@@ -4,7 +4,7 @@ use rand::RngExt;
 use tokio::sync::watch;
 
 use crate::{
-    config::ProviderProvisioningConfig, db::oracle::OracleRepository,
+    config::ProviderCoreProvisioningConfig, db::oracle::OracleRepository,
     services::provider::ProviderService,
 };
 
@@ -23,11 +23,11 @@ impl ProviderProvisioningHandle {
 pub fn start_provider_provisioning_worker(
     repository: Arc<OracleRepository>,
     service: ProviderService,
-    config: ProviderProvisioningConfig,
+    config: ProviderCoreProvisioningConfig,
 ) -> Option<ProviderProvisioningHandle> {
     if !config.enabled {
         tracing::info!(
-            worker.name = "provider-provisioning",
+            worker.name = "provider-core-provisioning",
             "provider provisioning worker disabled"
         );
         return None;
@@ -40,7 +40,7 @@ pub fn start_provider_provisioning_worker(
 async fn run_worker(
     repository: Arc<OracleRepository>,
     service: ProviderService,
-    config: ProviderProvisioningConfig,
+    config: ProviderCoreProvisioningConfig,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -105,12 +105,12 @@ async fn run_worker(
         }
     }
     tracing::info!(
-        worker.name = "provider-provisioning",
+        worker.name = "provider-core-provisioning",
         "provider provisioning worker stopped"
     );
 }
 
-fn retry_backoff(config: &ProviderProvisioningConfig, attempt: u32) -> Duration {
+fn retry_backoff(config: &ProviderCoreProvisioningConfig, attempt: u32) -> Duration {
     let exponent = attempt.saturating_sub(1).min(31);
     let base = config
         .initial_backoff_ms
@@ -126,12 +126,12 @@ mod tests {
     use crate::config::Settings;
 
     #[test]
-    fn provider_provisioning_backoff_is_bounded() {
+    fn provider_core_provisioning_backoff_is_bounded() {
         let settings = Settings::new().expect("settings should load");
         for attempt in [1, 2, 10, u32::MAX] {
             assert!(
-                retry_backoff(&settings.provider_provisioning, attempt).as_millis()
-                    <= u128::from(settings.provider_provisioning.max_backoff_ms)
+                retry_backoff(&settings.provider_core_provisioning, attempt).as_millis()
+                    <= u128::from(settings.provider_core_provisioning.max_backoff_ms)
             );
         }
     }
