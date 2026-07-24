@@ -391,7 +391,9 @@ impl From<SetCardPolicyResult> for SetCardPolicyResponse {
             operation_id: value.operation_id,
             funding_mode: value.funding_mode.into(),
             withdrawal_limit_authority: value.withdrawal_limit_authority.into(),
-            limit_calendar: value.limit_calendar,
+            limit_calendar: value.limit_calendar.map(|calendar| {
+                serde_json::to_value(calendar).expect("calendar serialization is stable")
+            }),
         }
     }
 }

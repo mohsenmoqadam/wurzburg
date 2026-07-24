@@ -158,9 +158,10 @@ impl OracleRepository {
                 let operation_id = Uuid::new_v4();
                 let terms: CardPolicyTerms = serde_json::from_str(&policy_json)
                     .map_err(|error| DbError::Query(format!("invalid draft policy JSON: {error}")))?;
-                let calendar: Option<serde_json::Value> = calendar_json.as_deref()
-                    .map(serde_json::from_str).transpose()
-                    .map_err(|error| DbError::Query(format!("invalid range calendar JSON: {error}")))?;
+                let calendar = calendar_json
+                    .as_deref()
+                    .map(super::card_range::limit_calendar_from_json)
+                    .transpose()?;
                 insert_policy_outbox(connection, operation_id, card_range_id, policy_id, policy_version, funding_mode, authority, calendar.as_ref(), &terms, &event_headers)?;
                 connection.execute(
                     "UPDATE card_policy_profiles SET publication_operation_id=:1,updated_by_subject=:2,updated_at=SYSTIMESTAMP WHERE card_policy_profile_id=:3 AND status='DRAFT' AND publication_operation_id IS NULL",

@@ -68,6 +68,8 @@ async fn manages_policy_lifecycle_through_running_wurzburg_and_oracle() {
     assert_eq!(first["disposition"], "CREATED");
     assert_eq!(first["profile"]["status"], "DRAFT");
     assert!(first["operation_id"].is_null());
+    assert_eq!(first["limit_calendar"]["week_starts_on"], "SATURDAY");
+    assert_eq!(first["limit_calendar"]["window_mode"], "CALENDAR");
     assert!(first["profile"]["withdrawal_limits"]["daily"]["max_count"].is_null());
     let first_policy_id = uuid_field(&first["profile"], "card_policy_profile_id");
 
@@ -120,6 +122,11 @@ async fn manages_policy_lifecycle_through_running_wurzburg_and_oracle() {
     .await;
     assert_eq!(replay_status, reqwest::StatusCode::OK);
     assert_eq!(replay_snapshot, created_snapshot);
+    assert_eq!(
+        replay_snapshot["limit_calendar"]["week_starts_on"],
+        "SATURDAY"
+    );
+    assert_eq!(replay_snapshot["limit_calendar"]["window_mode"], "CALENDAR");
 
     attach_active_provider(&repository.pool, card_range_id).await;
     let publication_body = policy_body(2_000_000, None, "publish first policy");
@@ -349,6 +356,31 @@ async fn manages_policy_lifecycle_through_running_wurzburg_and_oracle() {
         "SUPERSEDED"
     );
 
+    // Policy history is a real Oracle keyset query. Prove both the initial
+    // page (no cursor bind) and the next page selected by before_version.
+    let (history_status, history) = list_policies(&client, address, card_range_id, None, 1).await;
+    assert_eq!(history_status, reqwest::StatusCode::OK, "{history}");
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        history["items"][0]["card_policy_profile_id"],
+        replacement_id.to_string()
+    );
+
+    let (previous_status, previous) = list_policies(
+        &client,
+        address,
+        card_range_id,
+        Some(replacement_version),
+        1,
+    )
+    .await;
+    assert_eq!(previous_status, reqwest::StatusCode::OK, "{previous}");
+    assert_eq!(previous["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        previous["items"][0]["card_policy_profile_id"],
+        policy_id.to_string()
+    );
+
     // Two real HTTP requests racing with one idempotency identity converge on
     // one Oracle profile. One request creates it and the waiter replays it.
     let concurrent_range_id = create_platform_range(&client, address).await;
@@ -571,6 +603,34 @@ async fn get_current_policy(
         .unwrap();
     let status = response.status();
     let body = response.text().await.unwrap();
+    (status, body)
+}
+
+async fn list_policies(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    card_range_id: Uuid,
+    before_version: Option<i64>,
+    limit: u16,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let mut url =
+        format!("http://{address}/api/v1/card-ranges/{card_range_id}/policies?limit={limit}");
+    if let Some(before_version) = before_version {
+        url.push_str(&format!("&before_version={before_version}"));
+    }
+    let response = client
+        .get(url)
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("X-Correlation-Id", "policy-history-read")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.10")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    let body = serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({ "raw": text }));
     (status, body)
 }
 

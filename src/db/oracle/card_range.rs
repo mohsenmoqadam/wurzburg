@@ -490,7 +490,7 @@ fn limit_calendar_to_json_string(calendar: &LimitCalendar) -> DbResult<String> {
     .map_err(|error| DbError::Query(format!("failed to serialize limit calendar: {error}")))
 }
 
-fn limit_calendar_from_json(value: &str) -> DbResult<LimitCalendar> {
+pub(crate) fn limit_calendar_from_json(value: &str) -> DbResult<LimitCalendar> {
     let value: serde_json::Value = serde_json::from_str(value)
         .map_err(|error| DbError::Query(format!("invalid limit calendar JSON: {error}")))?;
 
@@ -504,9 +504,9 @@ fn limit_calendar_from_json(value: &str) -> DbResult<LimitCalendar> {
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| DbError::Query("limit calendar week start is missing".to_string()))?
     {
-        "Saturday" => WeekStartDay::Saturday,
-        "Sunday" => WeekStartDay::Sunday,
-        "Monday" => WeekStartDay::Monday,
+        "SATURDAY" | "Saturday" => WeekStartDay::Saturday,
+        "SUNDAY" | "Sunday" => WeekStartDay::Sunday,
+        "MONDAY" | "Monday" => WeekStartDay::Monday,
         other => return Err(DbError::Query(format!("unknown week start day `{other}`"))),
     };
     let window_mode = match value
@@ -514,7 +514,7 @@ fn limit_calendar_from_json(value: &str) -> DbResult<LimitCalendar> {
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| DbError::Query("limit calendar window mode is missing".to_string()))?
     {
-        "Calendar" => LimitWindowMode::Calendar,
+        "CALENDAR" | "Calendar" => LimitWindowMode::Calendar,
         other => {
             return Err(DbError::Query(format!(
                 "unknown limit window mode `{other}`"
@@ -531,15 +531,15 @@ fn limit_calendar_from_json(value: &str) -> DbResult<LimitCalendar> {
 
 fn week_start_to_json(value: WeekStartDay) -> &'static str {
     match value {
-        WeekStartDay::Saturday => "Saturday",
-        WeekStartDay::Sunday => "Sunday",
-        WeekStartDay::Monday => "Monday",
+        WeekStartDay::Saturday => "SATURDAY",
+        WeekStartDay::Sunday => "SUNDAY",
+        WeekStartDay::Monday => "MONDAY",
     }
 }
 
 fn limit_window_mode_to_json(value: LimitWindowMode) -> &'static str {
     match value {
-        LimitWindowMode::Calendar => "Calendar",
+        LimitWindowMode::Calendar => "CALENDAR",
     }
 }
 
@@ -563,8 +563,26 @@ fn read_error(error: oracle::Error) -> DbError {
 mod tests {
     use super::{
         card_range_insert_sql, card_range_list_sql, card_range_lock_sql, card_range_overlap_sql,
-        card_range_select_sql,
+        card_range_select_sql, limit_calendar_from_json, limit_calendar_to_json_string,
     };
+    use crate::domain::card_range::{LimitCalendar, LimitWindowMode, WeekStartDay};
+
+    #[test]
+    fn calendar_json_writes_canonical_enums_and_reads_existing_rows() {
+        let calendar = LimitCalendar {
+            timezone: "Asia/Tehran".to_string(),
+            week_starts_on: WeekStartDay::Saturday,
+            window_mode: LimitWindowMode::Calendar,
+        };
+        let canonical = limit_calendar_to_json_string(&calendar).unwrap();
+        assert!(canonical.contains(r#""week_starts_on":"SATURDAY""#));
+        assert!(canonical.contains(r#""window_mode":"CALENDAR""#));
+
+        let existing =
+            r#"{"timezone":"Asia/Tehran","week_starts_on":"Saturday","window_mode":"Calendar"}"#;
+        assert_eq!(limit_calendar_from_json(existing).unwrap(), calendar);
+        assert_eq!(limit_calendar_from_json(&canonical).unwrap(), calendar);
+    }
 
     #[test]
     fn insert_sql_persists_range_structure_and_controls() {

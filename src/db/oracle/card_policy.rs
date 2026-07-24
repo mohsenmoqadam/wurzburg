@@ -22,7 +22,7 @@ use crate::{
             CardPolicyProfile, CardPolicyStatus, CardPolicyTerms, DesiredCardPolicy,
             PolicyMaterializationReceipt,
         },
-        card_range::{FundingMode, WithdrawalLimitAuthority},
+        card_range::{FundingMode, LimitCalendar, WithdrawalLimitAuthority},
         idempotency::IdempotencyStatus,
     },
     kafka::contract::{InternalEventEnvelope, InternalEventHeaders},
@@ -43,7 +43,7 @@ pub struct SetCardPolicyResult {
     pub operation_id: Option<Uuid>,
     pub funding_mode: FundingMode,
     pub withdrawal_limit_authority: WithdrawalLimitAuthority,
-    pub limit_calendar: Option<serde_json::Value>,
+    pub limit_calendar: Option<LimitCalendar>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +69,7 @@ pub enum PolicyReceiptPersistenceOutcome {
 struct LockedRangePolicyContext {
     funding_mode: FundingMode,
     authority: WithdrawalLimitAuthority,
-    limit_calendar: Option<serde_json::Value>,
+    limit_calendar: Option<LimitCalendar>,
     active_provider_count: i64,
 }
 
@@ -328,6 +328,7 @@ impl OracleRepository {
                         &policy_list_sql(),
                         &[
                             &card_range_id_raw(card_range_id),
+                            &before_version,
                             &before_version,
                             &fetch_limit,
                         ],
@@ -732,11 +733,8 @@ fn lock_range_policy_context(
         authority: WithdrawalLimitAuthority::from_db_value(&authority)
             .ok_or_else(|| DbError::Query("unknown policy authority".to_string()))?,
         limit_calendar: calendar_json
-            .map(|value| {
-                serde_json::from_str(&value).map_err(|error| {
-                    DbError::Query(format!("invalid range calendar JSON in Oracle: {error}"))
-                })
-            })
+            .as_deref()
+            .map(super::card_range::limit_calendar_from_json)
             .transpose()?,
         active_provider_count: row.get(3).map_err(read_error)?,
     }))
@@ -821,7 +819,7 @@ pub(crate) fn insert_policy_outbox(
     version: i64,
     funding_mode: FundingMode,
     authority: WithdrawalLimitAuthority,
-    limit_calendar: Option<&serde_json::Value>,
+    limit_calendar: Option<&LimitCalendar>,
     terms: &CardPolicyTerms,
     headers: &InternalEventHeaders,
 ) -> DbResult<()> {
@@ -1076,7 +1074,7 @@ fn policy_select_by_status_sql() -> String {
 
 fn policy_list_sql() -> String {
     format!(
-        "SELECT {} FROM card_policy_profiles WHERE card_range_id = :1 AND (:2 IS NULL OR version < :2) ORDER BY version DESC FETCH NEXT :3 ROWS ONLY",
+        "SELECT {} FROM card_policy_profiles WHERE card_range_id = :1 AND (:2 IS NULL OR version < :3) ORDER BY version DESC FETCH NEXT :4 ROWS ONLY",
         policy_select_columns()
     )
 }
@@ -1084,9 +1082,16 @@ fn policy_list_sql() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        policy_outbox_insert_sql, policy_receipt_insert_sql, policy_receipt_replay_sql,
-        policy_update_draft_sql,
+        policy_list_sql, policy_outbox_insert_sql, policy_receipt_insert_sql,
+        policy_receipt_replay_sql, policy_update_draft_sql,
     };
+
+    #[test]
+    fn policy_history_uses_distinct_oracle_bind_positions() {
+        let sql = policy_list_sql();
+        assert!(sql.contains("(:2 IS NULL OR version < :3)"));
+        assert!(sql.contains("FETCH NEXT :4 ROWS ONLY"));
+    }
 
     #[test]
     fn draft_update_refuses_a_frozen_publication() {
