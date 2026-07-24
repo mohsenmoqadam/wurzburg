@@ -183,25 +183,25 @@ fn add_trusted_gateway_headers_to_path(path_item: &mut PathItem) {
     ];
 
     for operation in operations.into_iter().flatten() {
-        add_header_if_missing(
+        ensure_header_example(
             operation,
             "X-Correlation-Id",
             "WSO2 canonical business correlation ID.",
             "ce5c1b18-9050-49b2-9fd2-a2f208a56117",
         );
-        add_header_if_missing(
+        ensure_header_example(
             operation,
             "X-Request-Id",
             "WSO2 unique HTTP attempt ID.",
             "ce5c1b18-9050-49b2-9fd2-a2f208a56118",
         );
-        add_header_if_missing(
+        ensure_header_example(
             operation,
             "X-WSO2-Client-IP",
             "Client IP address verified and forwarded by WSO2.",
             "172.16.245.5",
         );
-        add_header_if_missing(
+        ensure_header_example(
             operation,
             "X-WSO2-Gateway-Id",
             "Identifier of the trusted WSO2 gateway that forwarded the request.",
@@ -210,16 +210,21 @@ fn add_trusted_gateway_headers_to_path(path_item: &mut PathItem) {
     }
 }
 
-fn add_header_if_missing(
+fn ensure_header_example(
     operation: &mut Operation,
     name: &'static str,
     description: &'static str,
     example: &'static str,
 ) {
     let parameters = operation.parameters.get_or_insert_with(Vec::new);
-    if parameters.iter().any(|parameter| {
+    if let Some(parameter) = parameters.iter_mut().find(|parameter| {
         parameter.parameter_in == ParameterIn::Header && parameter.name.eq_ignore_ascii_case(name)
     }) {
+        // Handler annotations may already define the header with a more precise
+        // schema (for example UUID). Rebuild it only to add the shared example,
+        // preserving that endpoint-specific schema and description.
+        let builder: ParameterBuilder = parameter.clone().into();
+        *parameter = builder.example(Some(json!(example))).build();
         return;
     }
 
@@ -258,6 +263,7 @@ pub fn swagger_router(swagger_path: &str, api_host: &str, api_port: u16) -> Rout
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
     use utoipa::OpenApi;
     use utoipa::openapi::path::{HttpMethod, ParameterIn};
 
@@ -288,6 +294,43 @@ mod tests {
                 }),
                 "{header} must be documented for Swagger UI"
             );
+        }
+    }
+
+    #[test]
+    fn existing_trusted_headers_receive_shared_swagger_examples() {
+        let openapi = ApiDoc::openapi();
+        let operation = openapi
+            .paths
+            .get_path_operation(
+                "/api/v1/card-ranges/{card_range_id}/policies",
+                HttpMethod::Get,
+            )
+            .expect("card policy history operation must be documented");
+        let parameters = serde_json::to_value(
+            operation
+                .parameters
+                .as_ref()
+                .expect("card policy history must document trusted headers"),
+        )
+        .expect("OpenAPI parameters must serialize");
+
+        let expected = [
+            ("X-Correlation-Id", "ce5c1b18-9050-49b2-9fd2-a2f208a56117"),
+            ("X-Request-Id", "ce5c1b18-9050-49b2-9fd2-a2f208a56118"),
+            ("X-WSO2-Client-IP", "172.16.245.5"),
+            ("X-WSO2-Gateway-Id", "wso2-dev-gateway"),
+        ];
+        let parameters = parameters
+            .as_array()
+            .expect("serialized OpenAPI parameters must be an array");
+
+        for (name, example) in expected {
+            let parameter = parameters
+                .iter()
+                .find(|parameter| parameter["name"] == Value::String(name.to_string()))
+                .unwrap_or_else(|| panic!("{name} must be documented"));
+            assert_eq!(parameter["example"], Value::String(example.to_string()));
         }
     }
 }
