@@ -44,6 +44,7 @@ impl OracleMigrator {
                     "card_policy_profiles",
                     "card_range_providers",
                     "card_ranges",
+                    "provider_fee_profiles",
                     "provider_event_subscriptions",
                     "provider_provisioning_jobs",
                     "provider_kafka_credentials",
@@ -360,7 +361,11 @@ mod tests {
             .expect("provider foundation migration should exist");
 
         assert!(migration.sql.contains("CREATE TABLE providers"));
-        assert!(!migration.sql.contains("'DRAFT'"));
+        assert!(
+            !migration
+                .sql
+                .contains("status IN ('DRAFT', 'ACTIVE', 'SUSPENDED', 'INACTIVE', 'FAILED')")
+        );
         assert!(migration.sql.contains("CREATE TABLE provider_contacts"));
         assert!(
             migration
@@ -372,6 +377,7 @@ mod tests {
                 .sql
                 .contains("CREATE TABLE provider_ledger_accounts")
         );
+        assert!(migration.sql.contains("CREATE TABLE provider_fee_profiles"));
         assert!(migration.sql.contains("PROVIDER_OWNED"));
         assert!(migration.sql.contains("PROVIDER_FEE"));
         assert!(migration.sql.contains("CMS_SETTLEMENT"));

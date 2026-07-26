@@ -142,6 +142,10 @@ impl CardRangeService {
             CardRangeMutationPersistenceOutcome::PrerequisitesMissing => Err(ApiError::new(
                 WurzburgResultCode::CardRangePrerequisitesMissing,
             )),
+            CardRangeMutationPersistenceOutcome::FeeProfilesMissing => Err(ApiError::with_details(
+                WurzburgResultCode::CardRangePrerequisitesMissing,
+                serde_json::json!({"missing_prerequisite": "PROVIDER_FEE_PROFILE"}),
+            )),
             CardRangeMutationPersistenceOutcome::PublicationPending => Err(ApiError::new(
                 WurzburgResultCode::RangeControlPublicationPending,
             )),

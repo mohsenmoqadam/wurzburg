@@ -11,6 +11,7 @@ pub mod outbox;
 pub mod pool;
 pub mod provider;
 pub mod provider_event_subscription;
+pub mod provider_fee;
 pub mod provider_kafka;
 pub mod provider_lifecycle;
 pub mod provider_provisioning;
@@ -40,6 +41,10 @@ pub use provider::{CreateProviderPersistenceOutcome, ProviderLedgerAccountMappin
 pub use provider_event_subscription::{
     ProviderEventSubscriptionRecord, ProviderEventSubscriptionSet,
     ProviderEventSubscriptionUpdateOutcome,
+};
+pub use provider_fee::{
+    FeeProfileMutationDisposition, ProviderFeeReceiptPersistenceOutcome,
+    SetProviderFeeProfilePersistenceOutcome, SetProviderFeeProfileResult,
 };
 pub use provider_kafka::{
     ClaimedProviderKafkaJob, ProviderKafkaAccessRecord, ProviderKafkaCommandAction,

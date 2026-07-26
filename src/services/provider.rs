@@ -293,6 +293,9 @@ impl ProviderService {
             ProviderRangeAssignmentOutcome::PolicyMissing => Err(ApiError::new(
                 WurzburgResultCode::CardRangePrerequisitesMissing,
             )),
+            ProviderRangeAssignmentOutcome::FeeProfileMissing => Err(ApiError::new(
+                WurzburgResultCode::ProviderFeeProfileRequired,
+            )),
             ProviderRangeAssignmentOutcome::SingleProviderOccupied => {
                 Err(ApiError::new(WurzburgResultCode::ProviderRangeOccupied))
             }

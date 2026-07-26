@@ -217,9 +217,26 @@ Wolfsburg materializes the active provider fee profile at:
 FEE:{provider_id}
 ```
 
+Wolfsburg consumes `PROVIDER_FEE_PROFILE_PUBLISH_REQUESTED` and writes this
+complete replacement value:
+
+```json
+{
+  "provider_fee_profile_id": "uuid",
+  "provider_id": "uuid",
+  "version": 3,
+  "fee_policy": {
+    "rate_bps": 125,
+    "fixed_amount_rials": 5000,
+    "fee_payer": "PROVIDER_USER"
+  }
+}
+```
+
 Fee version replacement follows the same outbox, idempotent write, and receipt
-rules as policy materialization. Exact fee payload fields remain defined by the
-Provider handoff and future Nuremberg contract update.
+rules as policy materialization. The receipt uses `profile_type = FEE`,
+`aggregate_id = provider_id`, `profile_id = provider_fee_profile_id`, and
+`runtime_key = FEE:{provider_id}`.
 
 ## 8. Materialization Receipt
 
@@ -248,6 +265,11 @@ For CPOL, a valid receipt causes one Wurzburg Oracle transaction to:
 
 - persist the receipt;
 - mark the materialized DRAFT policy ACTIVE;
+
+For FEE, the same transaction shape persists the receipt, supersedes the prior
+ACTIVE provider fee profile, activates the matching frozen DRAFT, records audit
+evidence, and completes inbox processing. A mismatch leaves the prior ACTIVE
+profile unchanged.
 - mark the previous ACTIVE policy SUPERSEDED;
 - complete the associated operation; and
 - write immutable audit evidence.

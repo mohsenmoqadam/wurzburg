@@ -17,6 +17,7 @@ use crate::{
     config::{KafkaConfig, KafkaReceiptConsumerConfig},
     db::oracle::OracleRepository,
     domain::card_policy::PolicyMaterializationReceipt,
+    domain::provider_fee::ProviderFeeMaterializationReceipt,
     kafka::{
         contract::{InternalEventEnvelope, RuntimeMaterializationReceipt},
         producer::apply_security_config,
@@ -191,6 +192,27 @@ async fn process_message(
             }
             repository
                 .apply_range_control_receipt(envelope.payload)
+                .await
+                .map_err(|_| ReceiptProcessingError::Database)?;
+        }
+        "FEE" => {
+            let profile_id =
+                envelope
+                    .payload
+                    .profile_id
+                    .ok_or(ReceiptProcessingError::Contract(
+                        "RECEIPT_PROFILE_ID_MISSING",
+                    ))?;
+            repository
+                .apply_provider_fee_materialization_receipt(ProviderFeeMaterializationReceipt {
+                    receipt_event_id: envelope.payload.receipt_event_id,
+                    operation_id: envelope.payload.operation_id,
+                    provider_id: envelope.payload.aggregate_id,
+                    provider_fee_profile_id: profile_id,
+                    materialized_version: envelope.payload.materialized_version,
+                    runtime_key: envelope.payload.runtime_key,
+                    materialized_at: envelope.payload.materialized_at,
+                })
                 .await
                 .map_err(|_| ReceiptProcessingError::Database)?;
         }

@@ -279,6 +279,22 @@ Semantic ownership:
 Dragonfly is not a ledger, audit log, event bus, or durable business database.
 Every key can be reconstructed from Oracle mappings plus TigerBeetle state.
 
+The canonical funding accounts published for each provider source are:
+
+```rust
+pub struct FundingSourceLedgerAccounts {
+    pub user_provider_account: Uuid,
+    pub provider_fee_account: Uuid,
+    pub cms_settlement_account: Uuid,
+    pub platform_fee_account: Uuid,
+}
+```
+
+`PROVIDER_OWNED` is deliberately absent from this runtime contract. Wurzburg
+uses it for provider credit grant/return workflows; Nuremberg uses
+`provider_fee_account` only when the active provider fee profile selects the
+provider as fee payer.
+
 Production operating rules:
 
 - use TLS/authentication and a highly available Dragonfly deployment because

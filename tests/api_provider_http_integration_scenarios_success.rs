@@ -151,6 +151,31 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     // Card facts: a DRAFT range and policy are created through their public
     // APIs. The first active Provider assignment must freeze CPOL and emit both
     // CPOL and CRCTL commands in the same Oracle transaction.
+    let fee_response = client
+        .put(format!(
+            "http://{address}/api/v1/providers/{provider_id}/fee-profile"
+        ))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("Idempotency-Key", Uuid::new_v4().to_string())
+        .header("X-Correlation-Id", "provider-fee-draft")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "application/json")
+        .body(
+            serde_json::json!({
+                "rate_bps": 100,
+                "fixed_amount_rials": 0,
+                "fee_payer": "PROVIDER_USER",
+                "reason": "initial provider fee profile"
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fee_response.status(), reqwest::StatusCode::CREATED);
+
     let card_range_id = create_range_and_policy(&client, address).await;
     let assignment_body = serde_json::json!({
         "card_range_id": card_range_id,
@@ -181,6 +206,7 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     );
     let assignment: serde_json::Value = serde_json::from_str(&assignment_text).unwrap();
     assert!(assignment["policy_operation_id"].is_string());
+    assert!(assignment["fee_operation_id"].is_string());
     assert!(assignment["range_control_operation_id"].is_string());
 
     let mappings = repository

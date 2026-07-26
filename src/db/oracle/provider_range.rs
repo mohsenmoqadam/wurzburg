@@ -11,6 +11,7 @@ use crate::{
             idempotency::{
                 complete_idempotency_record, fetch_idempotency_record, insert_idempotency_record,
             },
+            provider_fee::{FeeProfileAttachmentPreparation, prepare_fee_profile_for_attachment},
             types::{raw16_to_uuid, uuid_to_raw16},
         },
     },
@@ -29,6 +30,7 @@ pub struct ProviderRangeAssignmentResult {
     pub card_range_id: Uuid,
     pub range_control_operation_id: Uuid,
     pub policy_operation_id: Option<Uuid>,
+    pub fee_operation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +41,7 @@ pub enum ProviderRangeAssignmentOutcome {
     ProviderNotActive,
     RangeNotFound,
     PolicyMissing,
+    FeeProfileMissing,
     SingleProviderOccupied,
     PublicationPending,
     IdempotencyConflict,
@@ -125,22 +128,36 @@ impl OracleRepository {
                 return Ok(ProviderRangeAssignmentOutcome::SingleProviderOccupied);
             }
 
-            let mut policy_rows = connection.query(
-                "SELECT card_policy_profile_id,version,JSON_SERIALIZE(profile_json RETURNING CLOB),publication_operation_id FROM card_policy_profiles WHERE card_range_id=:1 AND status='DRAFT' FOR UPDATE",
+            // Multi-provider additions consume the already materialized policy.
+            // Only the first provider freezes and publishes an initial draft.
+            let active_policy_count: i64 = connection.query_row_as(
+                "SELECT COUNT(*) FROM card_policy_profiles WHERE card_range_id=:1 AND status='ACTIVE'",
                 &[&range_raw],
-            ).map_err(|error| DbError::Query(format!("failed to lock range policy draft: {error}")))?;
-            let Some(policy_row) = policy_rows.next() else {
-                return Ok(ProviderRangeAssignmentOutcome::PolicyMissing);
-            };
-            let policy_row = policy_row.map_err(|error| DbError::Query(format!("failed to read range policy draft: {error}")))?;
-            let policy_id_raw: Vec<u8> = policy_row.get(0).map_err(read_error)?;
-            let policy_id = raw16_to_uuid(&policy_id_raw)?;
-            let policy_version: i64 = policy_row.get(1).map_err(read_error)?;
-            let policy_json: String = policy_row.get(2).map_err(read_error)?;
-            let existing_policy_operation: Option<Vec<u8>> = policy_row.get(3).map_err(read_error)?;
-            if existing_policy_operation.is_some() && active_count == 0 {
-                return Ok(ProviderRangeAssignmentOutcome::PublicationPending);
+            ).map_err(|error| DbError::Query(format!("failed to check active range policy: {error}")))?;
+            let mut draft_policy = None;
+            if active_policy_count == 0 {
+                let mut policy_rows = connection.query(
+                    "SELECT card_policy_profile_id,version,JSON_SERIALIZE(profile_json RETURNING CLOB),publication_operation_id FROM card_policy_profiles WHERE card_range_id=:1 AND status='DRAFT' FOR UPDATE",
+                    &[&range_raw],
+                ).map_err(|error| DbError::Query(format!("failed to lock range policy draft: {error}")))?;
+                let Some(policy_row) = policy_rows.next() else { return Ok(ProviderRangeAssignmentOutcome::PolicyMissing); };
+                let policy_row = policy_row.map_err(|error| DbError::Query(format!("failed to read range policy draft: {error}")))?;
+                let operation: Option<Vec<u8>> = policy_row.get(3).map_err(read_error)?;
+                if operation.is_some() { return Ok(ProviderRangeAssignmentOutcome::PublicationPending); }
+                draft_policy = Some((
+                    policy_row.get::<_, Vec<u8>>(0).map_err(read_error)?,
+                    policy_row.get::<_, i64>(1).map_err(read_error)?,
+                    policy_row.get::<_, String>(2).map_err(read_error)?,
+                ));
             }
+
+            let fee_operation_id = match prepare_fee_profile_for_attachment(
+                connection, &context, provider_id, &reason, &event_headers,
+            )? {
+                FeeProfileAttachmentPreparation::Ready { operation_id } => operation_id,
+                FeeProfileAttachmentPreparation::Missing => return Ok(ProviderRangeAssignmentOutcome::FeeProfileMissing),
+                FeeProfileAttachmentPreparation::PublicationPending => return Ok(ProviderRangeAssignmentOutcome::PublicationPending),
+            };
 
             insert_idempotency_record(connection, context.new_idempotency_record())?;
             if let Some(current_range) = current_range.filter(|value| *value != card_range_id) {
@@ -154,8 +171,9 @@ impl OracleRepository {
                 &[&range_raw, &uuid_to_raw16(provider_id).to_vec(), &context.actor.subject],
             ).map_err(|error| DbError::Query(format!("failed to assign provider to range: {error}")))?;
 
-            let policy_operation_id = if active_count == 0 {
+            let policy_operation_id = if let Some((policy_id_raw, policy_version, policy_json)) = draft_policy {
                 let operation_id = Uuid::new_v4();
+                let policy_id = raw16_to_uuid(&policy_id_raw)?;
                 let terms: CardPolicyTerms = serde_json::from_str(&policy_json)
                     .map_err(|error| DbError::Query(format!("invalid draft policy JSON: {error}")))?;
                 let calendar = calendar_json
@@ -189,13 +207,14 @@ impl OracleRepository {
                 &event_headers,
             )?;
 
-            let result = ProviderRangeAssignmentResult { provider_id, card_range_id, range_control_operation_id, policy_operation_id };
+            let result = ProviderRangeAssignmentResult { provider_id, card_range_id, range_control_operation_id, policy_operation_id, fee_operation_id };
             let snapshot = serde_json::json!({
                 "provider_id": provider_id,
                 "card_range_id": card_range_id,
                 "status": "ACTIVE",
                 "range_control_operation_id": range_control_operation_id,
-                "policy_operation_id": policy_operation_id
+                "policy_operation_id": policy_operation_id,
+                "fee_operation_id": fee_operation_id
             });
             insert_audit_log(connection, NewAuditLog {
                 audit_log_id: Uuid::new_v4(), entity_type: "CARD_RANGE_PROVIDER".to_string(), entity_id: provider_id,

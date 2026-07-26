@@ -8,7 +8,9 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use super::handlers::{audit_logs, card_policies, card_ranges, provider_events, providers, system};
+use super::handlers::{
+    audit_logs, card_policies, card_ranges, provider_events, provider_fees, providers, system,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -35,6 +37,10 @@ use super::handlers::{audit_logs, card_policies, card_ranges, provider_events, p
             providers::activate_provider,
             providers::suspend_provider,
             providers::deactivate_provider,
+            provider_fees::set_provider_fee_profile,
+            provider_fees::get_current_provider_fee_profile,
+            provider_fees::list_provider_fee_profiles,
+            provider_fees::get_provider_fee_profile,
             card_ranges::create_card_range,
             card_ranges::get_card_range,
             card_ranges::list_card_ranges,
@@ -83,6 +89,15 @@ use super::handlers::{audit_logs, card_policies, card_ranges, provider_events, p
             providers::ProviderKafkaCertificateResponse,
             providers::ProviderKafkaCommandRequest,
             providers::ProviderKafkaCommandResponse,
+            provider_fees::SetProviderFeeProfileRequest,
+            provider_fees::FeePayerDto,
+            provider_fees::FeePolicyDto,
+            provider_fees::ProviderFeeProfileStatusDto,
+            provider_fees::FeeProfileMutationDispositionDto,
+            provider_fees::ProviderFeeProfileResponse,
+            provider_fees::SetProviderFeeProfileResponse,
+            provider_fees::ListProviderFeeProfilesQuery,
+            provider_fees::ListProviderFeeProfilesResponse,
             audit_logs::ListAuditLogsQuery,
             audit_logs::AuditLogResponse,
             audit_logs::ListAuditLogsResponse,
@@ -129,6 +144,7 @@ use super::handlers::{audit_logs, card_policies, card_ranges, provider_events, p
     ),
     tags(
         (name = "Providers", description = "Platform-admin provider lifecycle and provisioning APIs"),
+        (name = "Provider Fees", description = "Platform-admin provider fee profile APIs"),
         (name = "Audit", description = "Platform-admin immutable business audit queries"),
         (name = "Provider Events", description = "Provider event catalog and delivery subscription controls"),
         (name = "Card Ranges", description = "Platform-admin card range control APIs"),

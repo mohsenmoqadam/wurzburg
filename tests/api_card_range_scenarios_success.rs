@@ -80,7 +80,7 @@ fn swagger_exposes_card_range_create_with_required_test_headers() {
         "X-Correlation-Id",
         "ce5c1b18-9050-49b2-9fd2-a2f208a56117",
     );
-    assert_header_example(operation, "X-WSO2-Client-IP", "192.168.0.1");
+    assert_header_example(operation, "X-WSO2-Client-IP", "172.16.245.5");
     assert_eq!(
         operation["requestBody"]["content"]["application/json"]["example"],
         json!({

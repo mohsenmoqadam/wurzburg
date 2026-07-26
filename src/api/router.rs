@@ -4,7 +4,9 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::handlers::{audit_logs, card_policies, card_ranges, provider_events, providers, system};
+use super::handlers::{
+    audit_logs, card_policies, card_ranges, provider_events, provider_fees, providers, system,
+};
 use crate::telemetry::http::trace_http_request;
 use crate::{api::cors::manual_cors_middleware, state::AppState};
 
@@ -13,6 +15,19 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
     let system_routes = Router::new().route("/db-health", get(system::db_health));
 
     let api_router = Router::new()
+        .route(
+            "/providers/{provider_id}/fee-profile",
+            get(provider_fees::get_current_provider_fee_profile)
+                .put(provider_fees::set_provider_fee_profile),
+        )
+        .route(
+            "/providers/{provider_id}/fee-profiles",
+            get(provider_fees::list_provider_fee_profiles),
+        )
+        .route(
+            "/providers/{provider_id}/fee-profiles/{fee_profile_id}",
+            get(provider_fees::get_provider_fee_profile),
+        )
         .route(
             "/providers",
             post(providers::create_provider).get(providers::list_providers),

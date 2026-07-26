@@ -480,9 +480,11 @@ Rules:
   `account_category`; they are not a second persisted account identity.
 - Provider-user/card ledger accounts should be a separate table, not stored in
   `provider_ledger_accounts`.
-- Fee source is controlled by range/card policy. If the configured fee source
-  is provider-funded, Nuremberg debits `PROVIDER_FEE` and credits
-  `PLATFORM_FEE` during Confirm.
+- Fee calculation and payer selection are controlled by the provider's active,
+  versioned fee profile. If `fee_payer` is `PROVIDER`, Nuremberg debits
+  `PROVIDER_FEE` and credits `PLATFORM_FEE`. If it is `PROVIDER_USER`,
+  Nuremberg debits the participating provider-user account and credits
+  `PLATFORM_FEE`.
 
 All Wurzburg money and usage accounts belong to one configured TigerBeetle
 ledger. TigerBeetle cannot transfer between ledgers, so provider accounts,
@@ -496,6 +498,60 @@ All four provider-level accounts may have a negative signed balance. The
 provider-user account must reject a debit that would make it negative. Policy
 usage accounts follow the debit/credit convention defined by Nuremberg's limit
 account contract.
+
+### Provider Fee Profiles
+
+Each provider has at most one `DRAFT` and one `ACTIVE` fee profile. Historical
+profiles are immutable and remain `SUPERSEDED` after replacement.
+
+```text
+ProviderFeeProfile:
+- provider_fee_profile_id
+- provider_id
+- version
+- rate_bps
+- fixed_amount_rials
+- fee_payer: PROVIDER_USER | PROVIDER
+- status: DRAFT | ACTIVE | SUPERSEDED
+- publication_operation_id
+- immutable lifecycle/audit fields
+```
+
+The fee for each provider allocation in a Nuremberg funding plan is:
+
+```text
+fee = ceil(provider_principal * rate_bps / 10000) + fixed_amount_rials
+```
+
+Rules:
+
+- `rate_bps` is between `0` and `10000`, inclusive.
+- `fixed_amount_rials` is between `0` and `9007199254740991`, inclusive.
+- A zero-rate, zero-fixed profile is valid and explicitly means no fee.
+- Provider creation does not require a fee profile.
+- Card-range attachment requires either an editable DRAFT or an ACTIVE fee
+  profile. Attaching a provider freezes and publishes its initial DRAFT.
+- A card range cannot become ACTIVE until every attached active provider has an
+  ACTIVE fee profile confirmed by a Wolfsburg materialization receipt.
+- Updating an attached provider creates or updates a replacement DRAFT and
+  publishes it immediately. The old ACTIVE profile remains authoritative until
+  the matching receipt atomically activates the replacement.
+- There is no cancel or manual publication-retry API. Durable outbox retry and
+  operational recovery own delivery; ambiguous runtime state is never exposed.
+- Provider suspension preserves `FEE:{provider_id}` and all fee history. Runtime
+  eligibility is controlled separately through provider/range/card controls.
+
+Platform-admin APIs:
+
+```text
+PUT /api/v1/providers/{provider_id}/fee-profile
+GET /api/v1/providers/{provider_id}/fee-profile
+GET /api/v1/providers/{provider_id}/fee-profiles
+GET /api/v1/providers/{provider_id}/fee-profiles/{fee_profile_id}
+```
+
+The current-profile API returns only ACTIVE state. DRAFT and SUPERSEDED records
+are available through history and by-ID APIs.
 
 Accordingly, TigerBeetle provider-level accounts do not set
 `debits_must_not_exceed_credits` or `credits_must_not_exceed_debits`.
@@ -1366,6 +1422,27 @@ CPOL:MultiProvider:{card_range_id}
 CRCTL:{card_range_id}
 FEE:{provider_id}
 ```
+
+The canonical FEE projection is:
+
+```json
+{
+  "provider_fee_profile_id": "uuid",
+  "provider_id": "uuid",
+  "version": 3,
+  "fee_policy": {
+    "rate_bps": 125,
+    "fixed_amount_rials": 5000,
+    "fee_payer": "PROVIDER_USER"
+  }
+}
+```
+
+Wurzburg emits `PROVIDER_FEE_PROFILE_PUBLISH_REQUESTED` in the same Oracle
+transaction that freezes the DRAFT. The event aggregate and partition key are
+the provider ID. Wolfsburg writes the complete replacement and returns a `FEE`
+materialization receipt; only that receipt changes Oracle ACTIVE/SUPERSEDED
+state.
 
 The exact Redis JSON contracts belong in the Wolfsburg handoff because
 Wolfsburg is the only service that writes these values. This document defines

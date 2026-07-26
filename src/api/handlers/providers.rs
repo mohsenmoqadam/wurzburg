@@ -281,6 +281,7 @@ pub struct ProviderCardRangeAssignmentResponse {
     pub status: String,
     pub range_control_operation_id: Uuid,
     pub policy_operation_id: Option<Uuid>,
+    pub fee_operation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -805,6 +806,7 @@ pub async fn assign_provider_card_range(
                 status: "ACTIVE".to_string(),
                 range_control_operation_id: result.range_control_operation_id,
                 policy_operation_id: result.policy_operation_id,
+                fee_operation_id: result.fee_operation_id,
             },
         ),
         crate::db::oracle::ProviderRangeAssignmentOutcome::Replayed(snapshot) => {
@@ -1201,7 +1203,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
-    if value.len() % 2 != 0 || value.len() > 4096 {
+    if !value.len().is_multiple_of(2) || value.len() > 4096 {
         return None;
     }
     value

@@ -46,6 +46,7 @@ pub enum CardRangeMutationPersistenceOutcome {
     InvalidTransition,
     Immutable,
     PrerequisitesMissing,
+    FeeProfilesMissing,
     PublicationPending,
     Overlap,
     ContractInvalid(String),
@@ -132,8 +133,16 @@ impl OracleRepository {
                         if current.range_control_operation_id.is_some() {
                             return Ok(CardRangeMutationPersistenceOutcome::PublicationPending);
                         }
-                        if !activation_ready(connection, &current)? {
-                            return Ok(CardRangeMutationPersistenceOutcome::PrerequisitesMissing);
+                        match activation_ready(connection, &current)? {
+                            ActivationReadiness::Ready => {}
+                            ActivationReadiness::CorePrerequisitesMissing => {
+                                return Ok(
+                                    CardRangeMutationPersistenceOutcome::PrerequisitesMissing,
+                                );
+                            }
+                            ActivationReadiness::FeeProfilesMissing => {
+                                return Ok(CardRangeMutationPersistenceOutcome::FeeProfilesMissing);
+                            }
                         }
                         insert_idempotency_record(connection, context.new_idempotency_record())?;
                         let operation_id = Uuid::new_v4();
@@ -323,7 +332,16 @@ fn update_draft(
     Ok(())
 }
 
-fn activation_ready(connection: &oracle::Connection, range: &CardRange) -> DbResult<bool> {
+enum ActivationReadiness {
+    Ready,
+    CorePrerequisitesMissing,
+    FeeProfilesMissing,
+}
+
+fn activation_ready(
+    connection: &oracle::Connection,
+    range: &CardRange,
+) -> DbResult<ActivationReadiness> {
     let raw = uuid_to_raw16(range.card_range_id).to_vec();
     let providers = connection
         .query_row_as::<i64>(
@@ -337,11 +355,22 @@ fn activation_ready(connection: &oracle::Connection, range: &CardRange) -> DbRes
             &[&raw],
         )
         .map_err(|error| DbError::Query(format!("failed to check active policy: {error}")))?;
-    Ok(policies == 1
-        && match range.funding_mode {
-            FundingMode::SingleProvider => providers == 1,
-            FundingMode::MultiProvider => providers >= 1,
-        })
+    let provider_shape_ready = match range.funding_mode {
+        FundingMode::SingleProvider => providers == 1,
+        FundingMode::MultiProvider => providers >= 1,
+    };
+    if policies != 1 || !provider_shape_ready {
+        return Ok(ActivationReadiness::CorePrerequisitesMissing);
+    }
+    let missing_fee_profiles = connection.query_row_as::<i64>(
+        "SELECT COUNT(*) FROM card_range_providers crp WHERE crp.card_range_id=:1 AND crp.status='ACTIVE' AND NOT EXISTS (SELECT 1 FROM provider_fee_profiles pfp WHERE pfp.provider_id=crp.provider_id AND pfp.status='ACTIVE')",
+        &[&raw],
+    ).map_err(|error| DbError::Query(format!("failed to check active provider fee profiles: {error}")))?;
+    Ok(if missing_fee_profiles == 0 {
+        ActivationReadiness::Ready
+    } else {
+        ActivationReadiness::FeeProfilesMissing
+    })
 }
 
 fn update_runtime_state(

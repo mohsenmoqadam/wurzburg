@@ -112,6 +112,74 @@ CREATE TABLE provider_ledger_accounts (
 CREATE INDEX idx_pla_provider_status
     ON provider_ledger_accounts(provider_id, status);
 
+CREATE TABLE provider_fee_profiles (
+    provider_fee_profile_id RAW(16) PRIMARY KEY,
+    provider_id RAW(16) NOT NULL,
+    rate_bps NUMBER(5,0) NOT NULL,
+    fixed_amount_rials NUMBER(19,0) NOT NULL,
+    fee_payer VARCHAR2(32) NOT NULL,
+    status VARCHAR2(32) DEFAULT 'DRAFT' NOT NULL,
+    version NUMBER(19,0) NOT NULL,
+    superseded_by_profile_id RAW(16),
+    publication_operation_id RAW(16),
+    created_by_subject VARCHAR2(255) NOT NULL,
+    updated_by_subject VARCHAR2(255) NOT NULL,
+    change_reason VARCHAR2(1000) NOT NULL,
+    activated_at TIMESTAMP(6) WITH TIME ZONE,
+    superseded_at TIMESTAMP(6) WITH TIME ZONE,
+    created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT fk_pfp_provider
+        FOREIGN KEY (provider_id) REFERENCES providers(provider_id),
+    CONSTRAINT fk_pfp_superseded_by
+        FOREIGN KEY (superseded_by_profile_id)
+        REFERENCES provider_fee_profiles(provider_fee_profile_id),
+    CONSTRAINT fk_pfp_publication_operation
+        FOREIGN KEY (publication_operation_id)
+        REFERENCES integration_outbox(operation_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    CONSTRAINT uq_pfp_provider_version UNIQUE (provider_id, version),
+    CONSTRAINT ck_pfp_rate CHECK (rate_bps BETWEEN 0 AND 10000),
+    CONSTRAINT ck_pfp_fixed CHECK (
+        fixed_amount_rials BETWEEN 0 AND 9007199254740991
+    ),
+    CONSTRAINT ck_pfp_payer CHECK (
+        fee_payer IN ('PROVIDER_USER', 'PROVIDER')
+    ),
+    CONSTRAINT ck_pfp_status CHECK (
+        status IN ('DRAFT', 'ACTIVE', 'SUPERSEDED')
+    ),
+    CONSTRAINT ck_pfp_lifecycle_shape CHECK (
+        (status = 'DRAFT'
+            AND activated_at IS NULL
+            AND superseded_at IS NULL
+            AND superseded_by_profile_id IS NULL)
+        OR (status = 'ACTIVE'
+            AND publication_operation_id IS NOT NULL
+            AND activated_at IS NOT NULL
+            AND superseded_at IS NULL
+            AND superseded_by_profile_id IS NULL)
+        OR (status = 'SUPERSEDED'
+            AND publication_operation_id IS NOT NULL
+            AND activated_at IS NOT NULL
+            AND superseded_at IS NOT NULL
+            AND superseded_by_profile_id IS NOT NULL)
+    )
+);
+
+CREATE UNIQUE INDEX uq_pfp_one_draft
+    ON provider_fee_profiles (
+        CASE WHEN status = 'DRAFT' THEN provider_id END
+    );
+
+CREATE UNIQUE INDEX uq_pfp_one_active
+    ON provider_fee_profiles (
+        CASE WHEN status = 'ACTIVE' THEN provider_id END
+    );
+
+CREATE INDEX idx_pfp_provider_history
+    ON provider_fee_profiles(provider_id, version DESC);
+
 CREATE TABLE provider_kafka_access (
     provider_kafka_access_id RAW(16) PRIMARY KEY,
     provider_id RAW(16) NOT NULL UNIQUE,
