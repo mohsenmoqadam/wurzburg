@@ -565,6 +565,8 @@ System configuration is file/environment/secret-store based:
 Business configuration is versioned/audited in Oracle:
 
 - provider operational profiles and event-delivery gates
+- automatic, Oracle-locked activation of scheduled provider operational
+  profiles on every replica, with command/read-path promotion as a safety net
 - card policies, fee profiles, and range controls
 - import/report formats, limits, and retention
 - operational business thresholds that may change without redeployment
@@ -590,11 +592,19 @@ drives alerts and deployment policy.
 Graceful shutdown:
 
 - stop accepting new requests/jobs
+- handle both `SIGINT` and Kubernetes `SIGTERM` through one process-wide
+  shutdown signal shared by the main API listener and the Swagger listener
 - drain in-flight Oracle/TigerBeetle commands to configured deadlines
 - stop claiming new WAL/outbox/batch rows and release ordinary worker leases
 - do not release a post-effect card lock that must remain for Wolfsburg
 - flush telemetry best-effort without blocking financial recovery
 - leave every uncertain command represented durably for the next instance
+
+`server.graceful_shutdown_timeout_ms` bounds HTTP and worker drain.
+`server.telemetry_shutdown_timeout_ms` independently bounds the final OTel
+flush. Reaching either deadline is logged as a structured operational failure;
+the process then terminates so Kubernetes replacement cannot be blocked by a
+stuck connection, dependency, or exporter.
 
 ## 17. Security And Data Protection
 

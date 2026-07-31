@@ -1,7 +1,8 @@
 use anyhow::Result;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tigerbeetle_rustclient_tests_snapshot::Client as TbClient;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
 use super::commands::TbCommand;
@@ -12,10 +13,47 @@ use crate::config::Settings;
 use crate::tigerbeetle::TigerBeetleError;
 use crate::tigerbeetle::models::AppAccountBalance;
 
-/// Spawns the background worker to handle batched requests for all TigerBeetle operations.
-pub async fn start_tb_worker(
+#[derive(Clone)]
+pub struct TigerBeetleWorkerHandle {
+    shutdown: watch::Sender<bool>,
+    task: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl TigerBeetleWorkerHandle {
+    pub async fn shutdown(&self) {
+        let _ = self.shutdown.send(true);
+        let task = self
+            .task
+            .lock()
+            .expect("TigerBeetle worker handle lock poisoned")
+            .take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+    }
+}
+
+/// Spawn the owned background worker that batches all TigerBeetle operations.
+pub fn start_tb_worker(
+    config: Arc<Settings>,
+    receiver: mpsc::Receiver<TbCommand>,
+) -> TigerBeetleWorkerHandle {
+    let (shutdown, shutdown_receiver) = watch::channel(false);
+    let task = tokio::spawn(async move {
+        if let Err(error) = run_tb_worker(config, receiver, shutdown_receiver).await {
+            tracing::error!(error = ?error, "TigerBeetle worker failed");
+        }
+    });
+    TigerBeetleWorkerHandle {
+        shutdown,
+        task: Arc::new(Mutex::new(Some(task))),
+    }
+}
+
+async fn run_tb_worker(
     config: Arc<Settings>,
     mut receiver: mpsc::Receiver<TbCommand>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let addresses = config.tigerbeetle.replica_addresses.join(",");
 
@@ -26,28 +64,32 @@ pub async fn start_tb_worker(
     let batch_max_size = config.tigerbeetle.batch_max_size;
     let timeout = config.tigerbeetle.batch_timeout();
 
-    tokio::spawn(async move {
-        // Buffers for transfers
-        let mut transfer_batch = Vec::with_capacity(batch_max_size);
-        let mut transfer_responders = Vec::with_capacity(batch_max_size);
+    // Buffers for transfers
+    let mut transfer_batch = Vec::with_capacity(batch_max_size);
+    let mut transfer_responders = Vec::with_capacity(batch_max_size);
 
-        // Buffers for accounts
-        let mut account_batch = Vec::with_capacity(batch_max_size);
-        let mut account_responders = Vec::with_capacity(batch_max_size);
+    // Buffers for accounts
+    let mut account_batch = Vec::with_capacity(batch_max_size);
+    let mut account_responders = Vec::with_capacity(batch_max_size);
 
-        // Buffers for account lookups
-        let mut lookup_acc_batch = Vec::with_capacity(batch_max_size);
-        let mut lookup_acc_responders = Vec::with_capacity(batch_max_size);
+    // Buffers for account lookups
+    let mut lookup_acc_batch = Vec::with_capacity(batch_max_size);
+    let mut lookup_acc_responders = Vec::with_capacity(batch_max_size);
 
-        // Buffers for transfer lookups
-        let mut lookup_tx_batch = Vec::with_capacity(batch_max_size);
-        let mut lookup_tx_responders = Vec::with_capacity(batch_max_size);
+    // Buffers for transfer lookups
+    let mut lookup_tx_batch = Vec::with_capacity(batch_max_size);
+    let mut lookup_tx_responders = Vec::with_capacity(batch_max_size);
 
-        let mut timer = interval(timeout);
-        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut timer = interval(timeout);
+    timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        loop {
-            tokio::select! {
+    loop {
+        tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
                 cmd = receiver.recv() => {
                     match cmd {
                         Some(TbCommand::CreateTransfer { transfer, responder }) => {
@@ -123,9 +165,27 @@ pub async fn start_tb_worker(
                         process_lookup_transfers(&client, &mut lookup_tx_batch, &mut lookup_tx_responders).await;
                     }
                 }
-            }
         }
-    });
+    }
+
+    // Requests already accepted into a batch remain part of the graceful
+    // drain. The process-level deadline still bounds an unavailable cluster.
+    if !transfer_batch.is_empty() {
+        process_transfers(&client, &mut transfer_batch, &mut transfer_responders).await;
+    }
+    if !account_batch.is_empty() {
+        process_accounts(&client, &mut account_batch, &mut account_responders).await;
+    }
+    if !lookup_acc_batch.is_empty() {
+        process_lookup_accounts(&client, &mut lookup_acc_batch, &mut lookup_acc_responders).await;
+    }
+    if !lookup_tx_batch.is_empty() {
+        process_lookup_transfers(&client, &mut lookup_tx_batch, &mut lookup_tx_responders).await;
+    }
+    tracing::info!(
+        worker.name = "tigerbeetle-batch",
+        "TigerBeetle worker stopped"
+    );
 
     Ok(())
 }

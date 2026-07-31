@@ -72,11 +72,19 @@ async fn run_outbox_relay(
                     .await;
             }
             Err(error) => {
+                if *shutdown.borrow() {
+                    break;
+                }
                 tracing::error!(
                     error.kind = error.diagnostic_kind(),
                     "failed to claim Oracle outbox events"
                 );
-                tokio::time::sleep(poll_interval).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(poll_interval) => {},
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { break; }
+                    }
+                }
             }
         }
     }

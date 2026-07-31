@@ -19,12 +19,25 @@ pub struct Settings {
     pub tigerbeetle: TigerBeetleConfig,
     pub provider_core_provisioning: ProviderCoreProvisioningConfig,
     pub provider_kafka_access: ProviderKafkaAccessConfig,
+    pub provider_operational_profile_scheduler: ProviderOperationalProfileSchedulerConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    pub graceful_shutdown_timeout_ms: u64,
+    pub telemetry_shutdown_timeout_ms: u64,
+}
+
+impl ServerConfig {
+    pub fn graceful_shutdown_timeout(&self) -> Duration {
+        Duration::from_millis(self.graceful_shutdown_timeout_ms)
+    }
+
+    pub fn telemetry_shutdown_timeout(&self) -> Duration {
+        Duration::from_millis(self.telemetry_shutdown_timeout_ms)
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -225,6 +238,13 @@ pub struct ProviderKafkaAccessConfig {
     pub scram_iterations: i32,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProviderOperationalProfileSchedulerConfig {
+    pub enabled: bool,
+    pub batch_size: u16,
+    pub poll_interval_ms: u64,
+}
+
 impl ProviderKafkaAccessConfig {
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms)
@@ -344,6 +364,17 @@ impl Settings {
                 "Provider Kafka max attempts must be positive"
             );
         }
+        anyhow::ensure!(
+            settings.provider_operational_profile_scheduler.batch_size > 0,
+            "Provider operational profile scheduler batch size must be positive"
+        );
+        anyhow::ensure!(
+            settings
+                .provider_operational_profile_scheduler
+                .poll_interval_ms
+                > 0,
+            "Provider operational profile scheduler poll interval must be positive"
+        );
         Ok(settings)
     }
 
@@ -385,6 +416,10 @@ impl Settings {
             append_instance(&self.kafka.materialization_receipts.client_id, &instance);
         self.kafka.outbox_relay.worker_id =
             append_instance(&self.kafka.outbox_relay.worker_id, &instance);
+        self.provider_core_provisioning.worker_id =
+            append_instance(&self.provider_core_provisioning.worker_id, &instance);
+        self.provider_kafka_access.worker_id =
+            append_instance(&self.provider_kafka_access.worker_id, &instance);
     }
 }
 
@@ -605,6 +640,8 @@ mod tests {
         settings.apply_runtime_instance_identity();
 
         assert!(settings.kafka.outbox_relay.worker_id.contains(':'));
+        assert!(settings.provider_core_provisioning.worker_id.contains(':'));
+        assert!(settings.provider_kafka_access.worker_id.contains(':'));
         assert!(settings.kafka.producer.client_id.contains(':'));
         assert!(
             settings

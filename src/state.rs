@@ -8,7 +8,7 @@ use crate::db::oracle::{
 };
 use crate::kafka::{AppKafkaAdmin, AppKafkaProducer};
 use crate::security::provider_kafka_cipher::ProviderKafkaCredentialFactory;
-use crate::tigerbeetle::{AppTbClient, start_tb_worker};
+use crate::tigerbeetle::{AppTbClient, TigerBeetleWorkerHandle, start_tb_worker};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -19,6 +19,7 @@ pub struct AppState {
     pub kafka_producer: AppKafkaProducer,
     pub kafka_admin: AppKafkaAdmin,
     pub tb_client: AppTbClient,
+    pub tb_worker: TigerBeetleWorkerHandle,
     pub provider_kafka_credentials: Option<Arc<ProviderKafkaCredentialFactory>>,
 }
 
@@ -67,12 +68,7 @@ impl AppState {
 
         // 4. Setup TigerBeetle Client & Background Worker
         let (tb_client, tb_receiver) = AppTbClient::new(&config)?;
-        let worker_config = config_arc.clone();
-        tokio::spawn(async move {
-            if let Err(e) = start_tb_worker(worker_config, tb_receiver).await {
-                tracing::error!("TigerBeetle worker failed: {:?}", e);
-            }
-        });
+        let tb_worker = start_tb_worker(config_arc.clone(), tb_receiver);
 
         Ok(Self {
             config: config_arc,
@@ -82,6 +78,7 @@ impl AppState {
             kafka_producer,
             kafka_admin,
             tb_client,
+            tb_worker,
             provider_kafka_credentials,
         })
     }

@@ -311,20 +311,36 @@ fn insert_operational_profile(
     actor_subject: &str,
 ) -> DbResult<()> {
     let profile_id = Uuid::new_v4();
-    let status = if provider.operational_profile.effective_at <= Utc::now() {
-        "ACTIVE"
-    } else {
-        "SCHEDULED"
-    };
     let effective_at = provider.operational_profile.effective_at.to_rfc3339();
-    let profile = serde_json::to_string(&provider.operational_profile).map_err(|error| {
-        DbError::Query(format!("failed to serialize provider profile: {error}"))
-    })?;
-    connection.execute(
-        "INSERT INTO provider_operational_profiles (provider_operational_profile_id,provider_id,status,version,effective_at,profile_json,created_by_subject,change_reason) VALUES (:1,:2,:3,1,TO_TIMESTAMP_TZ(:4,'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM'),:5,:6,:7)",
-        &[&uuid_to_raw16(profile_id).to_vec(), &uuid_to_raw16(provider.provider_id).to_vec(), &status, &effective_at, &profile, &actor_subject, &"initial provider operational profile"],
-    ).map_err(|error| DbError::Query(format!("failed to insert provider operational profile: {error}")))?;
+    let profile =
+        serde_json::to_string(&provider.operational_profile.controls).map_err(|error| {
+            DbError::Query(format!("failed to serialize provider profile: {error}"))
+        })?;
+    connection
+        .execute(
+            operational_profile_insert_sql(),
+            &[
+                &uuid_to_raw16(profile_id).to_vec(),
+                &uuid_to_raw16(provider.provider_id).to_vec(),
+                &effective_at,
+                &effective_at,
+                &profile,
+                &actor_subject,
+                &actor_subject,
+                &"initial provider operational profile",
+                &effective_at,
+            ],
+        )
+        .map_err(|error| {
+            DbError::Query(format!(
+                "failed to insert provider operational profile: {error}"
+            ))
+        })?;
     Ok(())
+}
+
+fn operational_profile_insert_sql() -> &'static str {
+    "INSERT INTO provider_operational_profiles (provider_operational_profile_id,provider_id,status,version,effective_at,profile_json,created_by_subject,updated_by_subject,change_reason,activated_at) VALUES (:1,:2,CASE WHEN TO_TIMESTAMP_TZ(:3,'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM')<=SYSTIMESTAMP THEN 'ACTIVE' ELSE 'SCHEDULED' END,1,TO_TIMESTAMP_TZ(:4,'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM'),:5,:6,:7,:8,CASE WHEN TO_TIMESTAMP_TZ(:9,'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM')<=SYSTIMESTAMP THEN SYSTIMESTAMP ELSE NULL END)"
 }
 
 fn insert_ledger_mappings(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<()> {
@@ -398,7 +414,10 @@ fn insert_provisioning_jobs(
     Ok(())
 }
 
-fn fetch_provider(connection: &oracle::Connection, provider_id: Uuid) -> DbResult<Provider> {
+pub(crate) fn fetch_provider(
+    connection: &oracle::Connection,
+    provider_id: Uuid,
+) -> DbResult<Provider> {
     let row = connection
         .query_row(
             provider_select_sql(),
@@ -551,7 +570,7 @@ fn read_error(error: oracle::Error) -> DbError {
 
 #[cfg(test)]
 mod tests {
-    use super::provider_list_sql;
+    use super::{operational_profile_insert_sql, provider_list_sql};
 
     #[test]
     fn provider_list_uses_bound_filters_and_descending_keyset_order() {
@@ -561,5 +580,13 @@ mod tests {
         assert!(sql.contains("provider_id < :cursor_id"));
         assert!(sql.contains("ORDER BY created_at DESC, provider_id DESC"));
         assert!(sql.contains("FETCH FIRST :fetch_limit ROWS ONLY"));
+    }
+
+    #[test]
+    fn initial_operational_profile_uses_distinct_oracle_bind_positions() {
+        let sql = operational_profile_insert_sql();
+        for position in 1..=9 {
+            assert_eq!(sql.matches(&format!(":{position}")).count(), 1);
+        }
     }
 }

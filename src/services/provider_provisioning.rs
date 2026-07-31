@@ -96,11 +96,19 @@ async fn run_worker(
                 }
             }
             Err(error) => {
+                if *shutdown.borrow() {
+                    break;
+                }
                 tracing::error!(
                     error.kind = error.diagnostic_kind(),
                     "failed to claim provider provisioning jobs"
                 );
-                tokio::time::sleep(config.poll_interval()).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(config.poll_interval()) => {},
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { break; }
+                    }
+                }
             }
         }
     }

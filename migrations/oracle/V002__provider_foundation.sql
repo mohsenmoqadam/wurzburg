@@ -63,8 +63,13 @@ CREATE TABLE provider_operational_profiles (
     profile_json JSON NOT NULL,
     superseded_by_profile_id RAW(16),
     created_by_subject VARCHAR2(255) NOT NULL,
+    updated_by_subject VARCHAR2(255) NOT NULL,
     change_reason VARCHAR2(1000) NOT NULL,
+    activated_at TIMESTAMP(6) WITH TIME ZONE,
+    superseded_at TIMESTAMP(6) WITH TIME ZONE,
+    cancelled_at TIMESTAMP(6) WITH TIME ZONE,
     created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT fk_pop_provider
         FOREIGN KEY (provider_id) REFERENCES providers(provider_id),
     CONSTRAINT fk_pop_superseded_by

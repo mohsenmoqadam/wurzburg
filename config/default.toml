@@ -1,6 +1,8 @@
 [server]
 host = "0.0.0.0"
 port = 65001
+graceful_shutdown_timeout_ms = 30000
+telemetry_shutdown_timeout_ms = 5000
 
 # Swagger (utoipa) configuration
 [swagger]
@@ -136,6 +138,11 @@ master_key_environment_variable = "WURZBURG_PROVIDER_KAFKA_MASTER_KEY_HEX"
 master_key_file = "/home/mohsen/Codes/war/wurzburg/secrets/provider-kafka-master-key.hex"
 encryption_key_version = "v1"
 scram_iterations = 8192
+
+[provider_operational_profile_scheduler]
+enabled = true
+batch_size = 50
+poll_interval_ms = 1000
 
 [telemetry]
 enabled = true

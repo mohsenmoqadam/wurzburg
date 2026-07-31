@@ -416,7 +416,7 @@ async fn install_terminal_audit_failure_trigger(pool: &OraclePool, provider_id: 
     install_trigger(
         pool,
         &format!(
-            "CREATE OR REPLACE TRIGGER test_fail_provider_terminal_audit BEFORE INSERT ON audit_logs FOR EACH ROW WHEN (NEW.correlation_id = 'provider-core-provisioning-{}-failed') BEGIN RAISE_APPLICATION_ERROR(-20012, 'forced provider terminal audit failure'); END;",
+            "CREATE OR REPLACE TRIGGER test_fail_provider_terminal_audit BEFORE INSERT ON audit_logs FOR EACH ROW WHEN (NEW.correlation_id = 'provider-provisioning-{}-failed') BEGIN RAISE_APPLICATION_ERROR(-20012, 'forced provider terminal audit failure'); END;",
             provider_id.simple()
         ),
     ).await;

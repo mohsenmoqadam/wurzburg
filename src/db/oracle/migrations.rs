@@ -372,6 +372,8 @@ mod tests {
                 .sql
                 .contains("CREATE TABLE provider_operational_profiles")
         );
+        assert!(migration.sql.contains("cancelled_at TIMESTAMP"));
+        assert!(migration.sql.contains("uq_pop_one_scheduled"));
         assert!(
             migration
                 .sql

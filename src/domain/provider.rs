@@ -135,18 +135,136 @@ impl ProviderContactType {
             Self::Legal => "LEGAL",
         }
     }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "FINANCE" => Some(Self::Finance),
+            "TECHNICAL" => Some(Self::Technical),
+            "OPERATIONS" => Some(Self::Operations),
+            "SECURITY" => Some(Self::Security),
+            "NOTIFICATION" => Some(Self::Notification),
+            "LEGAL" => Some(Self::Legal),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProviderContactStatus {
+    Active,
+    Suspended,
+}
+
+impl ProviderContactStatus {
+    pub fn as_db_value(self) -> &'static str {
+        match self {
+            Self::Active => "ACTIVE",
+            Self::Suspended => "SUSPENDED",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "ACTIVE" => Some(Self::Active),
+            "SUSPENDED" => Some(Self::Suspended),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderContactRecord {
+    pub provider_contact_id: Uuid,
+    pub provider_id: Uuid,
+    pub contact_type: ProviderContactType,
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub mobile: Option<String>,
+    pub sms_enabled: bool,
+    pub metadata: serde_json::Value,
+    pub status: ProviderContactStatus,
+    pub created_by_subject: String,
+    pub updated_by_subject: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ProviderContactRecord {
+    pub fn replay_snapshot(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("provider contact record is serializable")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderContactCursor {
+    pub created_at: DateTime<Utc>,
+    pub provider_contact_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderContactListQuery {
+    pub contact_type: Option<ProviderContactType>,
+    pub status: Option<ProviderContactStatus>,
+    pub limit: u32,
+    pub cursor: Option<ProviderContactCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderContactListPage {
+    pub items: Vec<ProviderContactRecord>,
+    pub next_cursor: Option<ProviderContactCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldUpdate<T> {
+    Unchanged,
+    Set(T),
+    Clear,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderIdentityUpdate {
+    pub legal_name: Option<String>,
+    pub trade_name: Option<String>,
+    pub tax_id: FieldUpdate<String>,
+    pub registration_number: FieldUpdate<String>,
+    pub email_address: FieldUpdate<String>,
+    pub website_url: FieldUpdate<String>,
+    pub mailing_address: FieldUpdate<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderContactUpdate {
+    pub contact_type: Option<ProviderContactType>,
+    pub name: FieldUpdate<String>,
+    pub email: FieldUpdate<String>,
+    pub phone: FieldUpdate<String>,
+    pub mobile: FieldUpdate<String>,
+    pub sms_enabled: Option<bool>,
+    pub metadata: Option<serde_json::Value>,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderOperationalProfile {
     pub effective_at: DateTime<Utc>,
+    #[serde(flatten)]
+    pub controls: ProviderOperationalControls,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderOperationalControls {
     pub timezone: String,
     pub user_onboarding_enabled: bool,
     pub active_windows: Vec<ProviderActiveWindow>,
     pub max_total_users: Option<u64>,
     pub credit_grant_enabled: bool,
     pub credit_grant_mode: CreditGrantLimitMode,
-    pub credit_grant_limit_amount_rials: u128,
+    pub credit_grant_limit_amount_rials: u64,
     pub credit_return_enabled: bool,
     pub new_assignment_enabled: bool,
     pub same_pan_reprint_enabled: bool,
@@ -154,6 +272,107 @@ pub struct ProviderOperationalProfile {
     pub attach_existing_multi_provider_card_enabled: bool,
     pub event_delivery_enabled: bool,
     pub event_delivery_disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProviderOperationalProfileStatus {
+    Scheduled,
+    Active,
+    Superseded,
+    Cancelled,
+}
+
+impl ProviderOperationalProfileStatus {
+    pub fn as_db_value(self) -> &'static str {
+        match self {
+            Self::Scheduled => "SCHEDULED",
+            Self::Active => "ACTIVE",
+            Self::Superseded => "SUPERSEDED",
+            Self::Cancelled => "CANCELLED",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "SCHEDULED" => Some(Self::Scheduled),
+            "ACTIVE" => Some(Self::Active),
+            "SUPERSEDED" => Some(Self::Superseded),
+            "CANCELLED" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderOperationalProfileRecord {
+    pub provider_operational_profile_id: Uuid,
+    pub provider_id: Uuid,
+    pub status: ProviderOperationalProfileStatus,
+    pub version: i64,
+    pub effective_at: DateTime<Utc>,
+    pub controls: ProviderOperationalControls,
+    pub superseded_by_profile_id: Option<Uuid>,
+    pub created_by_subject: String,
+    pub updated_by_subject: String,
+    pub change_reason: String,
+    pub activated_at: Option<DateTime<Utc>>,
+    pub superseded_at: Option<DateTime<Utc>>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ProviderOperationalProfileRecord {
+    pub fn replay_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "provider_operational_profile_id": self.provider_operational_profile_id,
+            "provider_id": self.provider_id,
+            "status": self.status,
+            "version": self.version,
+            "effective_at": self.effective_at,
+            "profile": {
+                "timezone": self.controls.timezone,
+                "user_onboarding": {
+                    "enabled": self.controls.user_onboarding_enabled,
+                    "active_windows": self.controls.active_windows,
+                    "max_total_users": self.controls.max_total_users,
+                },
+                "credit_grant": {
+                    "enabled": self.controls.credit_grant_enabled,
+                    "mode": self.controls.credit_grant_mode.as_api_value(),
+                    "limit_amount_rials": self.controls.credit_grant_limit_amount_rials,
+                },
+                "credit_return": { "enabled": self.controls.credit_return_enabled },
+                "card_operations": {
+                    "new_assignment_enabled": self.controls.new_assignment_enabled,
+                    "same_pan_reprint_enabled": self.controls.same_pan_reprint_enabled,
+                    "new_pan_replacement_enabled": self.controls.new_pan_replacement_enabled,
+                    "attach_existing_multi_provider_card_enabled": self.controls.attach_existing_multi_provider_card_enabled,
+                },
+                "event_delivery": {
+                    "enabled": self.controls.event_delivery_enabled,
+                    "disabled_reason": self.controls.event_delivery_disabled_reason,
+                },
+            },
+            "superseded_by_profile_id": self.superseded_by_profile_id,
+            "created_by_subject": self.created_by_subject,
+            "updated_by_subject": self.updated_by_subject,
+            "change_reason": self.change_reason,
+            "activated_at": self.activated_at,
+            "superseded_at": self.superseded_at,
+            "cancelled_at": self.cancelled_at,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesiredProviderOperationalProfile {
+    pub effective_at: DateTime<Utc>,
+    pub controls: ProviderOperationalControls,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,6 +400,16 @@ pub enum CreditGrantLimitMode {
     FixedLimit,
     CmsDebtLimit,
     OutstandingCreditLimit,
+}
+
+impl CreditGrantLimitMode {
+    pub fn as_api_value(self) -> &'static str {
+        match self {
+            Self::FixedLimit => "FixedLimit",
+            Self::CmsDebtLimit => "CmsDebtLimit",
+            Self::OutstandingCreditLimit => "OutstandingCreditLimit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -243,21 +472,116 @@ impl NewProvider {
         if !self.metadata.is_object() {
             return Err("provider metadata must be a JSON object");
         }
-        if self.operational_profile.timezone.trim().is_empty() {
-            return Err("operational profile timezone is required");
+        self.operational_profile.controls.validate()?;
+        for contact in &mut self.contacts {
+            contact.validate_and_normalize()?;
         }
-        for window in &self.operational_profile.active_windows {
+        Ok(self)
+    }
+}
+
+impl ProviderContact {
+    pub fn validate_and_normalize(&mut self) -> Result<(), &'static str> {
+        if !self.metadata.is_object() {
+            return Err("contact metadata must be a JSON object");
+        }
+        self.name = normalize_optional(self.name.take(), 255)?;
+        self.email = normalize_optional(self.email.take(), 255)?;
+        self.phone = normalize_optional(self.phone.take(), 64)?;
+        self.mobile = normalize_optional(self.mobile.take(), 64)?;
+        if self.name.is_none()
+            && self.email.is_none()
+            && self.phone.is_none()
+            && self.mobile.is_none()
+        {
+            return Err("contact must contain at least one name or communication channel");
+        }
+        if self.sms_enabled && self.mobile.is_none() {
+            return Err("SMS-enabled contact requires a mobile number");
+        }
+        Ok(())
+    }
+}
+
+impl ProviderIdentityUpdate {
+    pub fn validate_and_normalize(mut self) -> Result<Self, &'static str> {
+        self.legal_name = self
+            .legal_name
+            .map(|value| normalize_required(value, 2, 255))
+            .transpose()?;
+        self.trade_name = self
+            .trade_name
+            .map(|value| normalize_required(value, 2, 255))
+            .transpose()?;
+        self.tax_id = normalize_field_update(self.tax_id, 64)?;
+        self.registration_number = normalize_field_update(self.registration_number, 128)?;
+        self.email_address = normalize_field_update(self.email_address, 255)?;
+        self.website_url = normalize_field_update(self.website_url, 512)?;
+        self.mailing_address = normalize_field_update(self.mailing_address, 2000)?;
+        if self
+            .metadata
+            .as_ref()
+            .is_some_and(|value| !value.is_object())
+        {
+            return Err("provider metadata must be a JSON object");
+        }
+        self.reason = normalize_reason(self.reason, "provider identity change reason")?;
+        if self.legal_name.is_none()
+            && self.trade_name.is_none()
+            && matches!(self.tax_id, FieldUpdate::Unchanged)
+            && matches!(self.registration_number, FieldUpdate::Unchanged)
+            && matches!(self.email_address, FieldUpdate::Unchanged)
+            && matches!(self.website_url, FieldUpdate::Unchanged)
+            && matches!(self.mailing_address, FieldUpdate::Unchanged)
+            && self.metadata.is_none()
+        {
+            return Err("provider identity update must change at least one field");
+        }
+        Ok(self)
+    }
+}
+
+impl ProviderContactUpdate {
+    pub fn validate_and_normalize(mut self) -> Result<Self, &'static str> {
+        self.name = normalize_field_update(self.name, 255)?;
+        self.email = normalize_field_update(self.email, 255)?;
+        self.phone = normalize_field_update(self.phone, 64)?;
+        self.mobile = normalize_field_update(self.mobile, 64)?;
+        if self
+            .metadata
+            .as_ref()
+            .is_some_and(|value| !value.is_object())
+        {
+            return Err("contact metadata must be a JSON object");
+        }
+        self.reason = normalize_reason(self.reason, "provider contact change reason")?;
+        if self.contact_type.is_none()
+            && matches!(self.name, FieldUpdate::Unchanged)
+            && matches!(self.email, FieldUpdate::Unchanged)
+            && matches!(self.phone, FieldUpdate::Unchanged)
+            && matches!(self.mobile, FieldUpdate::Unchanged)
+            && self.sms_enabled.is_none()
+            && self.metadata.is_none()
+        {
+            return Err("provider contact update must change at least one field");
+        }
+        Ok(self)
+    }
+}
+
+impl ProviderOperationalControls {
+    pub fn validate(&mut self) -> Result<(), &'static str> {
+        self.timezone = self.timezone.trim().to_string();
+        if self.timezone.is_empty() || self.timezone.parse::<chrono_tz::Tz>().is_err() {
+            return Err("operational profile timezone must be a valid IANA timezone");
+        }
+        for window in &self.active_windows {
             if window.days.is_empty() || window.start_local_time >= window.end_local_time {
                 return Err("operational windows require days and must not cross midnight");
             }
         }
-        for (index, left) in self.operational_profile.active_windows.iter().enumerate() {
-            for right in self
-                .operational_profile
-                .active_windows
-                .iter()
-                .skip(index + 1)
-            {
+        for (index, left) in self.active_windows.iter().enumerate() {
+            for right in self.active_windows.iter().skip(index + 1) {
                 let same_day = left.days.iter().any(|day| right.days.contains(day));
                 let overlaps = left.start_local_time < right.end_local_time
                     && right.start_local_time < left.end_local_time;
@@ -266,31 +590,31 @@ impl NewProvider {
                 }
             }
         }
-        if self.operational_profile.event_delivery_enabled
-            && self
-                .operational_profile
-                .event_delivery_disabled_reason
-                .is_some()
-        {
+        if self.event_delivery_enabled && self.event_delivery_disabled_reason.is_some() {
             return Err("enabled event delivery cannot have a disabled reason");
         }
-        if !self.operational_profile.event_delivery_enabled
+        if !self.event_delivery_enabled
             && self
-                .operational_profile
                 .event_delivery_disabled_reason
                 .as_deref()
                 .is_none_or(|reason| reason.trim().is_empty())
         {
             return Err("disabled event delivery requires a reason");
         }
-        for contact in &mut self.contacts {
-            if !contact.metadata.is_object() {
-                return Err("contact metadata must be a JSON object");
-            }
-            contact.name = normalize_optional(contact.name.take(), 255)?;
-            contact.email = normalize_optional(contact.email.take(), 255)?;
-            contact.phone = normalize_optional(contact.phone.take(), 64)?;
-            contact.mobile = normalize_optional(contact.mobile.take(), 64)?;
+        self.event_delivery_disabled_reason = self
+            .event_delivery_disabled_reason
+            .take()
+            .map(|value| value.trim().to_string());
+        Ok(())
+    }
+}
+
+impl DesiredProviderOperationalProfile {
+    pub fn validate_and_normalize(mut self) -> Result<Self, &'static str> {
+        self.controls.validate()?;
+        self.reason = self.reason.trim().to_string();
+        if self.reason.is_empty() || self.reason.chars().count() > 1000 {
+            return Err("operational profile change reason must contain 1 to 1000 characters");
         }
         Ok(self)
     }
@@ -407,6 +731,28 @@ fn normalize_optional(value: Option<String>, max: usize) -> Result<Option<String
             Ok(Some(value))
         })
         .unwrap_or(Ok(None))
+}
+
+fn normalize_field_update(
+    value: FieldUpdate<String>,
+    max: usize,
+) -> Result<FieldUpdate<String>, &'static str> {
+    match value {
+        FieldUpdate::Unchanged => Ok(FieldUpdate::Unchanged),
+        FieldUpdate::Clear => Ok(FieldUpdate::Clear),
+        FieldUpdate::Set(value) => normalize_optional(Some(value), max)?.map_or_else(
+            || Ok(FieldUpdate::Clear),
+            |value| Ok(FieldUpdate::Set(value)),
+        ),
+    }
+}
+
+pub fn normalize_reason(value: String, label: &'static str) -> Result<String, &'static str> {
+    let value = value.trim().to_string();
+    if value.is_empty() || value.chars().count() > 1000 || value.chars().any(char::is_control) {
+        return Err(label);
+    }
+    Ok(value)
 }
 
 fn normalize_digits(value: &str) -> String {

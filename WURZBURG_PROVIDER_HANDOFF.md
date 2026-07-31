@@ -718,6 +718,24 @@ scheduled candidate may also be cancelled explicitly. At `effective_at`, the
 new profile becomes active and the old active profile becomes `SUPERSEDED` in
 one Oracle transaction. There is no multi-profile schedule queue.
 
+`effective_at` is stored only in its dedicated Oracle timestamp column. The
+`profile_json` document contains operational controls only; duplicating the
+schedule timestamp inside JSON would create two competing sources of truth.
+
+The scheduler configuration is deployment configuration, not business data:
+
+```toml
+[provider_operational_profile_scheduler]
+enabled = true
+batch_size = 50
+poll_interval_ms = 1000
+```
+
+Every replica may run the scheduler. Oracle provider-row locks and
+`SKIP LOCKED` make due-profile promotion safe across replicas. The worker is
+owned by the process lifecycle, propagates OTel context into Oracle work, and
+must drain during graceful shutdown.
+
 ## 11. Kafka Provisioning
 
 Provider onboarding provisions Kafka resources asynchronously. The provisioning
@@ -1117,7 +1135,12 @@ provider_operational_profiles
 - profile_json JSON not null
 - superseded_by_profile_id RAW(16) nullable
 - created_by VARCHAR2(255) not null
+- updated_by VARCHAR2(255) not null
 - created_at TIMESTAMP WITH TIME ZONE default SYSTIMESTAMP not null
+- activated_at TIMESTAMP WITH TIME ZONE nullable
+- superseded_at TIMESTAMP WITH TIME ZONE nullable
+- cancelled_at TIMESTAMP WITH TIME ZONE nullable
+- updated_at TIMESTAMP WITH TIME ZONE default SYSTIMESTAMP not null
 ```
 
 Indexes/constraints:
@@ -2027,24 +2050,29 @@ Provider contacts:
 POST   /api/v1/providers/{provider_id}/contacts
 GET    /api/v1/providers/{provider_id}/contacts
 PATCH  /api/v1/providers/{provider_id}/contacts/{contact_id}
-DELETE /api/v1/providers/{provider_id}/contacts/{contact_id}
+POST   /api/v1/providers/{provider_id}/contacts/{contact_id}/suspend
+POST   /api/v1/providers/{provider_id}/contacts/{contact_id}/reactivate
 ```
 
-`DELETE` performs an audited status transition to `SUSPENDED`; it never
-physically deletes the contact row.
+Contacts are never physically deleted. Suspension and reactivation are explicit,
+idempotent state-transition commands so history, notification routing decisions,
+and audit evidence remain unambiguous. Updating a suspended contact does not
+reactivate it.
 
 Provider operational controls:
 
 ```text
-POST   /api/v1/providers/{provider_id}/operational-profile
+POST   /api/v1/providers/{provider_id}/operational-profiles
 GET    /api/v1/providers/{provider_id}/operational-profile
 GET    /api/v1/providers/{provider_id}/operational-profiles
-DELETE /api/v1/providers/{provider_id}/operational-profiles/{profile_id}/scheduled
+POST   /api/v1/providers/{provider_id}/operational-profiles/{profile_id}/cancel
 ```
 
 The singular GET returns the full currently effective profile. The plural GET
-returns cursor-paginated full historical/scheduled profiles. DELETE cancels
-only a future `SCHEDULED` candidate and requires an audit reason.
+returns version-cursor-paginated full historical/scheduled profiles. The cancel
+command cancels only a future `SCHEDULED` candidate, requires an idempotency key
+and audit reason, and never deletes the row. A command endpoint is used because
+cancellation is an auditable state transition rather than resource deletion.
 
 Kafka provisioning:
 
@@ -2541,9 +2569,13 @@ unchanged; explicit JSON `null` clears only nullable fields:
   "email_address": "ops-new@example.com",
   "website_url": "https://new.example.com",
   "mailing_address": "New address",
-  "metadata": {}
+  "metadata": {},
+  "reason": "Registered provider details were updated"
 }
 ```
+
+`legal_name`, `trade_name`, and `metadata` cannot be cleared. Every mutation
+requires a non-empty reason, trusted WSO2 context, and `Idempotency-Key`.
 
 Lifecycle commands:
 
@@ -2559,7 +2591,8 @@ Request:
 ```json
 {
   "reason": "operator reason",
-  "metadata": {}
+  "metadata": {},
+  "reason": "Finance escalation contact added"
 }
 ```
 
@@ -2595,6 +2628,15 @@ Request:
 `sms_enabled` may be true only when a mobile number is present. Important
 system SMS notifications are sent to every active notification contact with
 this flag enabled; contacts are otherwise informational and optional.
+
+Contact updates use the same omitted-versus-null semantics as provider identity:
+omitted values remain unchanged and explicit `null` clears nullable contact
+fields. `contact_type`, `metadata`, and `status` cannot be cleared. Clearing the
+mobile number while `sms_enabled` remains true is rejected.
+
+Contact listing supports exact `contact_type` and `status` filters plus
+filter-bound opaque keyset pagination through `page_size` and `page_token`.
+The maximum page size is 100.
 
 Provider user onboarding:
 

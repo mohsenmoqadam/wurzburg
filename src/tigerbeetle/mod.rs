@@ -9,4 +9,4 @@ pub mod worker;
 pub use client::AppTbClient;
 pub use error::{TigerBeetleError, TigerBeetleResult};
 pub use models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
-pub use worker::start_tb_worker;
+pub use worker::{TigerBeetleWorkerHandle, start_tb_worker};

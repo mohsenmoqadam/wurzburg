@@ -1,8 +1,8 @@
 use chrono::{NaiveTime, Utc};
 use uuid::Uuid;
 use wurzburg::domain::provider::{
-    CreditGrantLimitMode, NewProvider, ProviderActiveWindow, ProviderOperationalProfile,
-    ProviderWeekday,
+    CreditGrantLimitMode, NewProvider, ProviderActiveWindow, ProviderOperationalControls,
+    ProviderOperationalProfile, ProviderWeekday,
 };
 
 /// Scenario goal: overlapping weekly controls must be rejected before Oracle,
@@ -23,23 +23,25 @@ fn rejects_overlapping_provider_operational_windows() {
         contacts: vec![],
         operational_profile: ProviderOperationalProfile {
             effective_at: Utc::now(),
-            timezone: "Asia/Tehran".to_string(),
-            user_onboarding_enabled: true,
-            active_windows: vec![
-                window("08:00:00", "12:00:00"),
-                window("11:00:00", "13:00:00"),
-            ],
-            max_total_users: None,
-            credit_grant_enabled: true,
-            credit_grant_mode: CreditGrantLimitMode::FixedLimit,
-            credit_grant_limit_amount_rials: 1_000_000,
-            credit_return_enabled: true,
-            new_assignment_enabled: true,
-            same_pan_reprint_enabled: true,
-            new_pan_replacement_enabled: true,
-            attach_existing_multi_provider_card_enabled: true,
-            event_delivery_enabled: true,
-            event_delivery_disabled_reason: None,
+            controls: ProviderOperationalControls {
+                timezone: "Asia/Tehran".to_string(),
+                user_onboarding_enabled: true,
+                active_windows: vec![
+                    window("08:00:00", "12:00:00"),
+                    window("11:00:00", "13:00:00"),
+                ],
+                max_total_users: None,
+                credit_grant_enabled: true,
+                credit_grant_mode: CreditGrantLimitMode::FixedLimit,
+                credit_grant_limit_amount_rials: 1_000_000,
+                credit_return_enabled: true,
+                new_assignment_enabled: true,
+                same_pan_reprint_enabled: true,
+                new_pan_replacement_enabled: true,
+                attach_existing_multi_provider_card_enabled: true,
+                event_delivery_enabled: true,
+                event_delivery_disabled_reason: None,
+            },
         },
     };
 

@@ -10,6 +10,7 @@ use crate::{
             idempotency::{
                 complete_idempotency_record, fetch_idempotency_record, insert_idempotency_record,
             },
+            provider_operational_profile::promote_due_for_provider,
             provider_range::{RangeControlProjection, insert_range_control_outbox},
             types::{raw16_to_uuid, uuid_to_raw16},
         },
@@ -62,6 +63,7 @@ impl OracleRepository {
             let Some(row) = rows.next() else { return Ok(ProviderLifecycleOutcome::NotFound); };
             let current_value: String = row.map_err(|error| DbError::Query(format!("failed to read provider lifecycle: {error}")))?.get(0).map_err(read_error)?;
             let current = ProviderStatus::from_db_value(&current_value).ok_or_else(|| DbError::Query("unknown provider lifecycle status".to_string()))?;
+            promote_due_for_provider(connection, provider_id)?;
             if !current.can_transition_to(target) {
                 return Ok(ProviderLifecycleOutcome::InvalidTransition);
             }

@@ -87,7 +87,7 @@ pub struct ProviderOperationalProfileRequest {
     pub profile: ProviderOperationalControlsRequest,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ProviderOperationalControlsRequest {
     pub timezone: String,
     pub user_onboarding: ProviderUserOnboardingControlRequest,
@@ -97,7 +97,7 @@ pub struct ProviderOperationalControlsRequest {
     pub event_delivery: ProviderEventDeliveryControlRequest,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ProviderUserOnboardingControlRequest {
     pub enabled: bool,
     #[serde(default)]
@@ -105,26 +105,26 @@ pub struct ProviderUserOnboardingControlRequest {
     pub max_total_users: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ProviderActiveWindowRequest {
     pub days: Vec<ProviderWeekdayDto>,
     pub start_local_time: NaiveTime,
     pub end_local_time: NaiveTime,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ProviderCreditGrantControlRequest {
     pub enabled: bool,
     pub mode: CreditGrantLimitModeDto,
     pub limit_amount_rials: u64,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ProviderEnabledControlRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ProviderCardOperationsControlRequest {
     pub new_assignment_enabled: bool,
     pub same_pan_reprint_enabled: bool,
@@ -132,7 +132,7 @@ pub struct ProviderCardOperationsControlRequest {
     pub attach_existing_multi_provider_card_enabled: bool,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ProviderEventDeliveryControlRequest {
     pub enabled: bool,
     pub disabled_reason: Option<String>,
@@ -938,7 +938,7 @@ struct ProviderTransition {
 }
 
 impl ProviderResponse {
-    fn new(provider: Provider) -> Self {
+    pub(crate) fn new(provider: Provider) -> Self {
         let core_provisioning_status = match provider.status {
             ProviderStatus::PendingProvisioning => ProviderCoreProvisioningStatusDto::Pending,
             ProviderStatus::Failed => ProviderCoreProvisioningStatusDto::Failed,
@@ -1065,29 +1065,31 @@ impl From<CreateProviderRequest> for NewProvider {
             contacts: request.contacts.into_iter().map(Into::into).collect(),
             operational_profile: ProviderOperationalProfile {
                 effective_at: request.operational_profile.effective_at,
-                timezone: controls.timezone,
-                user_onboarding_enabled: controls.user_onboarding.enabled,
-                active_windows: controls
-                    .user_onboarding
-                    .active_windows
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
-                max_total_users: controls.user_onboarding.max_total_users,
-                credit_grant_enabled: controls.credit_grant.enabled,
-                credit_grant_mode: controls.credit_grant.mode.into(),
-                credit_grant_limit_amount_rials: u128::from(
-                    controls.credit_grant.limit_amount_rials,
-                ),
-                credit_return_enabled: controls.credit_return.enabled,
-                new_assignment_enabled: controls.card_operations.new_assignment_enabled,
-                same_pan_reprint_enabled: controls.card_operations.same_pan_reprint_enabled,
-                new_pan_replacement_enabled: controls.card_operations.new_pan_replacement_enabled,
-                attach_existing_multi_provider_card_enabled: controls
-                    .card_operations
-                    .attach_existing_multi_provider_card_enabled,
-                event_delivery_enabled: controls.event_delivery.enabled,
-                event_delivery_disabled_reason: controls.event_delivery.disabled_reason,
+                controls: crate::domain::provider::ProviderOperationalControls {
+                    timezone: controls.timezone,
+                    user_onboarding_enabled: controls.user_onboarding.enabled,
+                    active_windows: controls
+                        .user_onboarding
+                        .active_windows
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                    max_total_users: controls.user_onboarding.max_total_users,
+                    credit_grant_enabled: controls.credit_grant.enabled,
+                    credit_grant_mode: controls.credit_grant.mode.into(),
+                    credit_grant_limit_amount_rials: controls.credit_grant.limit_amount_rials,
+                    credit_return_enabled: controls.credit_return.enabled,
+                    new_assignment_enabled: controls.card_operations.new_assignment_enabled,
+                    same_pan_reprint_enabled: controls.card_operations.same_pan_reprint_enabled,
+                    new_pan_replacement_enabled: controls
+                        .card_operations
+                        .new_pan_replacement_enabled,
+                    attach_existing_multi_provider_card_enabled: controls
+                        .card_operations
+                        .attach_existing_multi_provider_card_enabled,
+                    event_delivery_enabled: controls.event_delivery.enabled,
+                    event_delivery_disabled_reason: controls.event_delivery.disabled_reason,
+                },
             },
             kafka_access: None,
         }

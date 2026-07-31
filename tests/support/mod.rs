@@ -185,6 +185,8 @@ fn platform_admin_scopes() -> Vec<String> {
         "platform.card_ranges:read".to_string(),
         "platform.policies:write".to_string(),
         "platform.policies:read".to_string(),
+        "platform.fee_profiles:write".to_string(),
+        "platform.fee_profiles:read".to_string(),
         "platform.providers:write".to_string(),
         "platform.providers:read".to_string(),
         "platform.audit:read".to_string(),

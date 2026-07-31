@@ -10,6 +10,7 @@ use crate::{
             idempotency::{
                 complete_idempotency_record, fetch_idempotency_record, insert_idempotency_record,
             },
+            provider_operational_profile::{lock_provider, promote_due_for_provider},
             types::uuid_to_raw16,
         },
     },
@@ -55,7 +56,13 @@ impl OracleRepository {
         provider_id: Uuid,
     ) -> DbResult<Option<ProviderEventSubscriptionSet>> {
         self.pool
-            .with_connection(move |connection| fetch_subscription_set(connection, provider_id))
+            .with_transaction("resolve Provider event subscriptions", move |connection| {
+                if lock_provider(connection, provider_id)?.is_none() {
+                    return Ok(None);
+                }
+                promote_due_for_provider(connection, provider_id)?;
+                fetch_subscription_set(connection, provider_id)
+            })
             .await
     }
 
@@ -78,6 +85,10 @@ impl OracleRepository {
                 {
                     return classify_idempotency(&existing, &request_hash);
                 }
+                if lock_provider(connection, provider_id)?.is_none() {
+                    return Ok(ProviderEventSubscriptionUpdateOutcome::ProviderNotFound);
+                }
+                promote_due_for_provider(connection, provider_id)?;
                 let Some(previous) = fetch_subscription_set(connection, provider_id)? else {
                     return Ok(ProviderEventSubscriptionUpdateOutcome::ProviderNotFound);
                 };

@@ -5,7 +5,8 @@ use axum::{
 use std::sync::Arc;
 
 use super::handlers::{
-    audit_logs, card_policies, card_ranges, provider_events, provider_fees, providers, system,
+    audit_logs, card_policies, card_ranges, provider_events, provider_fees, provider_identity,
+    provider_operational_profiles, providers, system,
 };
 use crate::telemetry::http::trace_http_request;
 use crate::{api::cors::manual_cors_middleware, state::AppState};
@@ -15,6 +16,19 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
     let system_routes = Router::new().route("/db-health", get(system::db_health));
 
     let api_router = Router::new()
+        .route(
+            "/providers/{provider_id}/operational-profile",
+            get(provider_operational_profiles::get_current_provider_operational_profile),
+        )
+        .route(
+            "/providers/{provider_id}/operational-profiles",
+            get(provider_operational_profiles::list_provider_operational_profiles)
+                .post(provider_operational_profiles::set_provider_operational_profile),
+        )
+        .route(
+            "/providers/{provider_id}/operational-profiles/{profile_id}/cancel",
+            post(provider_operational_profiles::cancel_scheduled_provider_operational_profile),
+        )
         .route(
             "/providers/{provider_id}/fee-profile",
             get(provider_fees::get_current_provider_fee_profile)
@@ -32,7 +46,27 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
             "/providers",
             post(providers::create_provider).get(providers::list_providers),
         )
-        .route("/providers/{provider_id}", get(providers::get_provider))
+        .route(
+            "/providers/{provider_id}",
+            get(providers::get_provider).patch(provider_identity::update_provider_identity),
+        )
+        .route(
+            "/providers/{provider_id}/contacts",
+            get(provider_identity::list_provider_contacts)
+                .post(provider_identity::create_provider_contact),
+        )
+        .route(
+            "/providers/{provider_id}/contacts/{contact_id}",
+            axum::routing::patch(provider_identity::update_provider_contact),
+        )
+        .route(
+            "/providers/{provider_id}/contacts/{contact_id}/suspend",
+            post(provider_identity::suspend_provider_contact),
+        )
+        .route(
+            "/providers/{provider_id}/contacts/{contact_id}/reactivate",
+            post(provider_identity::reactivate_provider_contact),
+        )
         .route(
             "/providers/{provider_id}/ledger",
             get(providers::get_provider_ledger),

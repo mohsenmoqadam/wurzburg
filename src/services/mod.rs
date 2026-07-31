@@ -4,5 +4,7 @@ pub mod card_range;
 pub mod provider;
 pub mod provider_event_subscription;
 pub mod provider_fee;
+pub mod provider_identity;
 pub mod provider_kafka;
+pub mod provider_operational_profile;
 pub mod provider_provisioning;

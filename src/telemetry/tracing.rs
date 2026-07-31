@@ -110,9 +110,43 @@ pub fn init(config: &TelemetryConfig) -> Result<()> {
 
 /// Flush remaining spans and shutdown exporters.
 pub fn shutdown() {
-    if let Some(provider) = TRACER_PROVIDER.get() {
-        let _ = provider.shutdown();
+    if let Some(provider) = TRACER_PROVIDER.get()
+        && let Err(error) = provider.shutdown()
+    {
+        tracing::warn!(error = %error, "telemetry shutdown did not flush every span");
     }
 
     tracing::info!("telemetry shutdown");
+}
+
+/// Flush telemetry without allowing an unavailable collector to hold process
+/// termination open indefinitely. Telemetry is diagnostic and must never become
+/// a correctness dependency for a financial service.
+pub async fn shutdown_with_timeout(deadline: Duration) {
+    let Some(provider) = TRACER_PROVIDER.get().cloned() else {
+        return;
+    };
+
+    // A detached OS thread is intentional here. Tokio waits for spawn_blocking
+    // tasks while dropping the runtime, which could negate this deadline if an
+    // exporter becomes permanently stuck.
+    let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("wurzburg-otel-shutdown".to_string())
+        .spawn(move || {
+            let _ = result_sender.send(provider.shutdown());
+        })
+        .expect("failed to start telemetry shutdown thread");
+
+    match tokio::time::timeout(deadline, result_receiver).await {
+        Ok(Ok(Ok(()))) => tracing::info!("telemetry shutdown complete"),
+        Ok(Ok(Err(error))) => {
+            tracing::warn!(error = %error, "telemetry shutdown did not flush every span")
+        }
+        Ok(Err(_)) => tracing::warn!("telemetry shutdown thread ended without a result"),
+        Err(_) => tracing::warn!(
+            timeout_ms = deadline.as_millis(),
+            "telemetry shutdown deadline exceeded"
+        ),
+    }
 }

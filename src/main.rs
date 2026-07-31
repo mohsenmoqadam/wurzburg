@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{future::IntoFuture, sync::Arc};
 use tokio::net::TcpListener;
-use tokio::task;
+use tokio::sync::watch;
 
 use wurzburg::{
     api::{router::build_app_router, swagger::swagger_router},
@@ -10,6 +10,7 @@ use wurzburg::{
     services::{
         provider::ProviderService,
         provider_kafka::{ProviderKafkaService, start_provider_kafka_provisioning_worker},
+        provider_operational_profile::start_provider_operational_profile_scheduler,
         provider_provisioning::start_provider_provisioning_worker,
     },
     state::AppState,
@@ -32,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Init state (DB, Redis)
     let app_state = Arc::new(AppState::new(settings.clone()).await?);
+    let tb_worker = app_state.tb_worker.clone();
     let outbox_relay = start_outbox_relay(
         app_state.db.clone(),
         app_state.kafka_producer.clone(),
@@ -61,6 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         None => None,
     };
+    let provider_operational_profile_scheduler = start_provider_operational_profile_scheduler(
+        app_state.db.clone(),
+        settings.provider_operational_profile_scheduler.clone(),
+    );
 
     // 5. Build main API router
     let app = build_app_router(app_state.clone());
@@ -70,54 +76,169 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let main_listener = TcpListener::bind(&main_addr).await?;
     tracing::info!("Main server listening on {}", main_addr);
 
+    // A single signal stops every HTTP listener. Keeping Swagger on the same
+    // lifecycle prevents an orphan listener from surviving API shutdown.
+    let (http_shutdown, http_shutdown_receiver) = watch::channel(false);
+
     // 7. Setup Swagger server (if enabled)
-    if settings.swagger.enabled {
+    let swagger_server = if settings.swagger.enabled {
         let swagger_addr = format!("{}:{}", settings.swagger.host, settings.swagger.port);
         let swagger_path = settings.swagger.path.clone();
+        let swagger_listener = TcpListener::bind(&swagger_addr).await?;
+        let swagger_shutdown = http_shutdown_receiver.clone();
+        let swagger_app =
+            swagger_router(&swagger_path, &settings.server.host, settings.server.port);
+        tracing::info!(
+            "Swagger UI listening on http://{}{}",
+            swagger_addr,
+            swagger_path
+        );
 
-        task::spawn(async move {
-            let swagger_app =
-                swagger_router(&swagger_path, &settings.server.host, settings.server.port);
-            let swagger_listener = TcpListener::bind(&swagger_addr).await.unwrap();
-            tracing::info!(
-                "Swagger UI listening on http://{}{}",
-                swagger_addr,
-                swagger_path
-            );
-            axum::serve(swagger_listener, swagger_app).await.unwrap();
-        });
+        Some(tokio::spawn(async move {
+            axum::serve(swagger_listener, swagger_app)
+                .with_graceful_shutdown(wait_for_shutdown(swagger_shutdown))
+                .await
+        }))
+    } else {
+        None
+    };
+
+    // 8. Run until CTRL+C/SIGTERM or an unexpected main-listener failure.
+    let mut main_server = Box::pin(
+        axum::serve(main_listener, app)
+            .with_graceful_shutdown(wait_for_shutdown(http_shutdown_receiver))
+            .into_future(),
+    );
+    let mut server_result = None;
+    tokio::select! {
+        result = &mut main_server => {
+            server_result = Some(result);
+            tracing::error!("Main HTTP server stopped unexpectedly; shutting down the process");
+        }
+        _ = shutdown_signal() => {}
+    }
+    let _ = http_shutdown.send(true);
+
+    let graceful_shutdown = async {
+        if server_result.is_none() {
+            server_result = Some((&mut main_server).await);
+        }
+        let swagger_result = async {
+            if let Some(swagger_server) = swagger_server {
+                match swagger_server.await {
+                    Ok(result) => result,
+                    Err(error) => Err(std::io::Error::other(error)),
+                }
+            } else {
+                Ok(())
+            }
+        };
+        let outbox_shutdown = async {
+            if let Some(handle) = outbox_relay {
+                handle.shutdown().await;
+            }
+        };
+        let receipt_shutdown = async {
+            if let Some(handle) = receipt_consumer {
+                handle.shutdown().await;
+            }
+        };
+        let core_shutdown = async {
+            if let Some(handle) = provider_core_provisioning {
+                handle.shutdown().await;
+            }
+        };
+        let kafka_shutdown = async {
+            if let Some(handle) = provider_kafka_provisioning {
+                handle.shutdown().await;
+            }
+        };
+        let operational_profile_shutdown = async {
+            if let Some(handle) = provider_operational_profile_scheduler {
+                handle.shutdown().await;
+            }
+        };
+        let tigerbeetle_shutdown = tb_worker.shutdown();
+        let (swagger_result, (), (), (), (), (), ()) = tokio::join!(
+            swagger_result,
+            outbox_shutdown,
+            receipt_shutdown,
+            core_shutdown,
+            kafka_shutdown,
+            operational_profile_shutdown,
+            tigerbeetle_shutdown
+        );
+        swagger_result
+    };
+
+    if tokio::time::timeout(
+        settings.server.graceful_shutdown_timeout(),
+        graceful_shutdown,
+    )
+    .await
+    .is_err()
+    {
+        tracing::error!(
+            timeout_ms = settings.server.graceful_shutdown_timeout_ms,
+            "graceful shutdown deadline exceeded; remaining tasks will be cancelled"
+        );
     }
 
-    // 8. Run main server with graceful shutdown
-    let server_result = axum::serve(main_listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await;
-
-    if let Some(outbox_relay) = outbox_relay {
-        outbox_relay.shutdown().await;
-    }
-    if let Some(receipt_consumer) = receipt_consumer {
-        receipt_consumer.shutdown().await;
-    }
-    if let Some(provider_core_provisioning) = provider_core_provisioning {
-        provider_core_provisioning.shutdown().await;
-    }
-    if let Some(provider_kafka_provisioning) = provider_kafka_provisioning {
-        provider_kafka_provisioning.shutdown().await;
-    }
-    server_result?;
-
-    // 9. Shutdown telemetry after server stops
-    telemetry::tracing::shutdown();
+    // 9. Telemetry flush has its own shorter best-effort deadline.
+    telemetry::tracing::shutdown_with_timeout(settings.server.telemetry_shutdown_timeout()).await;
     tracing::info!("Server shutdown complete");
+
+    if let Some(server_result) = server_result {
+        server_result?;
+    }
 
     Ok(())
 }
 
 /// Await the CTRL+C signal for graceful shutdown
 async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Failed to install SIGTERM signal handler");
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.expect("Failed to install CTRL+C signal handler"),
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
     tokio::signal::ctrl_c()
         .await
         .expect("Failed to install CTRL+C signal handler");
     tracing::info!("Shutdown signal received, starting graceful shutdown...");
+}
+
+async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wait_for_shutdown;
+
+    #[tokio::test]
+    async fn shared_http_shutdown_signal_releases_waiters() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let waiter = tokio::spawn(wait_for_shutdown(receiver));
+
+        sender.send(true).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+            .await
+            .expect("shutdown waiter should be released")
+            .expect("shutdown waiter task should complete");
+    }
 }

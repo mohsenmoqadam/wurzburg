@@ -22,8 +22,8 @@ use wurzburg::{
 /// the production Oracle repository: editable draft, durable publication
 /// request, receipt-gated activation, replacement, and idempotent replay.
 ///
-/// Oracle facts: a range is created through HTTP; a provider attachment is
-/// inserted only when the scenario reaches the publication boundary.
+/// Oracle facts: a range is created through HTTP; an active provider with its
+/// required active fee profile is attached only at the publication boundary.
 /// External facts: Wolfsburg receipts are delivered through the same concrete
 /// Oracle consumer operation that the future Kafka worker will invoke.
 /// Final proof: only a matching receipt changes ACTIVE/SUPERSEDED state, while
@@ -686,12 +686,26 @@ async fn get_operation(
 
 async fn attach_active_provider(pool: &OraclePool, card_range_id: Uuid) {
     let provider_id = Uuid::new_v4();
+    let fee_profile_id = Uuid::new_v4();
+    let fee_operation_id = Uuid::new_v4();
+    let fee_event_id = Uuid::new_v4();
     let provider_raw = provider_id.as_bytes().to_vec();
+    let fee_profile_raw = fee_profile_id.as_bytes().to_vec();
+    let fee_operation_raw = fee_operation_id.as_bytes().to_vec();
+    let fee_event_raw = fee_event_id.as_bytes().to_vec();
     let range_raw = card_range_id.as_bytes().to_vec();
     pool.with_connection(move |connection| {
         connection.execute(
             "INSERT INTO providers (provider_id, legal_name, trade_name, status, created_by_subject, updated_by_subject) VALUES (:1, :2, :3, 'ACTIVE', :4, :4)",
             &[&provider_raw, &"Integration Provider", &"Integration", &"test-suite"],
+        ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute(
+            "INSERT INTO integration_outbox (outbox_event_id, operation_id, event_type, aggregate_type, aggregate_id, partition_key, payload_json, status, published_at) VALUES (:1, :2, 'PROVIDER_FEE_PROFILE_PUBLISH_REQUESTED', 'PROVIDER', :3, :4, '{}', 'PUBLISHED', SYSTIMESTAMP)",
+            &[&fee_event_raw, &fee_operation_raw, &provider_raw, &provider_id.to_string()],
+        ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute(
+            "INSERT INTO provider_fee_profiles (provider_fee_profile_id, provider_id, rate_bps, fixed_amount_rials, fee_payer, status, version, publication_operation_id, created_by_subject, updated_by_subject, change_reason, activated_at) VALUES (:1, :2, 0, 0, 'PROVIDER_USER', 'ACTIVE', 1, :3, :4, :5, :6, SYSTIMESTAMP)",
+            &[&fee_profile_raw, &provider_raw, &fee_operation_raw, &"test-suite", &"test-suite", &"cross-domain policy scenario prerequisite"],
         ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
         connection.execute(
             "INSERT INTO card_range_providers (card_range_id, provider_id, status, created_by_subject, updated_by_subject) VALUES (:1, :2, 'ACTIVE', :3, :3)",

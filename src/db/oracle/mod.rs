@@ -12,8 +12,10 @@ pub mod pool;
 pub mod provider;
 pub mod provider_event_subscription;
 pub mod provider_fee;
+pub mod provider_identity;
 pub mod provider_kafka;
 pub mod provider_lifecycle;
+pub mod provider_operational_profile;
 pub mod provider_provisioning;
 pub mod provider_range;
 pub mod range_control;
@@ -46,12 +48,17 @@ pub use provider_fee::{
     FeeProfileMutationDisposition, ProviderFeeReceiptPersistenceOutcome,
     SetProviderFeeProfilePersistenceOutcome, SetProviderFeeProfileResult,
 };
+pub use provider_identity::{ProviderContactMutationOutcome, ProviderIdentityMutationOutcome};
 pub use provider_kafka::{
     ClaimedProviderKafkaJob, ProviderKafkaAccessRecord, ProviderKafkaCommandAction,
     ProviderKafkaCommandOutcome, ProviderKafkaCredentialReadOutcome, ProviderKafkaJobStatusRecord,
     ProviderKafkaJobType, ProviderKafkaRetryDecision, ProviderKafkaStatusRecord,
 };
 pub use provider_lifecycle::ProviderLifecycleOutcome;
+pub use provider_operational_profile::{
+    CancelProviderOperationalProfilePersistenceOutcome, OperationalProfileMutationDisposition,
+    SetProviderOperationalProfilePersistenceOutcome, SetProviderOperationalProfileResult,
+};
 pub use provider_provisioning::ClaimedProviderProvisioningJob;
 pub use provider_range::{ProviderRangeAssignmentOutcome, ProviderRangeAssignmentResult};
 pub use range_control::RangeControlReceiptOutcome;
