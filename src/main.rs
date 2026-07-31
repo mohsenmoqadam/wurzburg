@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // developer command owns migration and destructive reset operations.
     verify_oracle_schema(&settings.database, &settings.migrations).await?;
 
-    // 4. Init state (DB, Redis)
+    // 4. Initialize dependency clients (Oracle, Dragonfly, Kafka, TigerBeetle, MinIO).
     let app_state = Arc::new(AppState::new(settings.clone()).await?);
     let tb_worker = app_state.tb_worker.clone();
     let outbox_relay = start_outbox_relay(

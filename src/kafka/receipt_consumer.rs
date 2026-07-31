@@ -216,6 +216,17 @@ async fn process_message(
                 .await
                 .map_err(|_| ReceiptProcessingError::Database)?;
         }
+        "CP" => {
+            if envelope.payload.profile_id.is_some() {
+                return Err(ReceiptProcessingError::Contract(
+                    "RECEIPT_PROFILE_ID_UNEXPECTED",
+                ));
+            }
+            repository
+                .apply_card_profile_receipt(envelope.payload)
+                .await
+                .map_err(|_| ReceiptProcessingError::Database)?;
+        }
         _ => {
             return Err(ReceiptProcessingError::Contract(
                 "RECEIPT_PROFILE_TYPE_INVALID",

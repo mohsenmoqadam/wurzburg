@@ -207,6 +207,25 @@ must not be added merely for abstraction aesthetics. Traits remain appropriate
 for genuinely substitutable external dependencies such as clocks, Kafka,
 Dragonfly, TigerBeetle, and object storage gateways.
 
+Infrastructure integration and composition modules follow these ownership
+boundaries:
+
+```text
+src/config/           configuration schema, loading, validation, runtime identity
+src/state/            application dependency container and process bootstrap
+src/object_storage/   MinIO client, bootstrap, models, key/size/checksum validation
+src/kafka/            Kafka contracts, clients, relay, receipts, and administration
+src/tigerbeetle/      TigerBeetle client, commands, mapping, and worker
+src/db/oracle/        Oracle persistence, transactions, migrations, and row mapping
+```
+
+Business services depend on the narrow public facade of each integration
+module. MinIO SDK types, credential construction, bucket provisioning, and
+object-key validation must not leak into handlers or application services.
+`AppState` is a dependency container rather than an infrastructure provisioning
+mechanism: normal server replicas construct clients and verify readiness, while
+explicit deployment init jobs create buckets, Kafka resources, and schema.
+
 ### Migration Policy
 
 - Before the first shared production/staging baseline, disposable draft
@@ -434,6 +453,7 @@ capacity until the cardholder changes the relationship/order.
 
 MinIO stores binary/large artifacts rather than Oracle:
 
+- bank card-issuance request and result CSV files
 - original batch import files
 - row-level batch result/error files
 - exports and generated transaction reports
@@ -441,9 +461,17 @@ MinIO stores binary/large artifacts rather than Oracle:
 Oracle stores job status, requester/audit context, filters, object keys,
 checksums, row counts, retention/expiration, and safe error summaries.
 
-Single-user onboarding is synchronous. Bulk onboarding is asynchronous only at
-the file-job boundary; each row executes the same synchronous, idempotent,
-recoverable command. Report generation is asynchronous.
+Existing-card single-user onboarding is synchronous. A new-card instruction is
+asynchronous only because physical bank issuance must complete first; the
+provider receives a durable issuance request ID. Bulk onboarding is
+asynchronous at the file-job boundary, and every row executes the same
+idempotent/recoverable onboarding contract. Report generation is asynchronous.
+
+Card-issuance objects use UUID-only path components. Accepted bank result files
+are checksum-addressed and immutable. Oracle stores object key, SHA-256,
+retention, row-set membership, and processing state; download/upload APIs
+recheck platform scope. PAN, national ID, names, delivery data, CSV bodies, and
+object keys are prohibited from logs, spans, metrics, and audit snapshots.
 
 Downloads require authorization re-check and use either short-lived pre-signed
 URLs or controlled streaming. Object keys, bucket names, credentials, and signed
@@ -668,8 +696,9 @@ Testing scales by boundary:
   profile materialization, fail-closed reads, and stale-write rejection
 - Kafka integration tests for partition keys, at-least-once duplicates, inbox
   deduplication, outbox retry, schemas, provider ACLs, and suppression/replay
-- MinIO tests for streaming upload, checksums, authorization, result files, and
-  retention
+- MinIO tests for bounded upload/download, checksums, authorization, immutable
+  result files, interrupted requests, and retention. Streaming becomes required
+  before any configured file limit can exceed the process memory budget.
 - WSO2 contract tests for mTLS/JWT/header spoofing/scopes/idempotency/errors
 - OTel tests that prove trace continuation across HTTP/internal Kafka/workers
   and prove prohibited fields never reach traces/provider events
@@ -704,8 +733,9 @@ receipt, MinIO interruption, and OTel/Tempo unavailability.
 - Post-effect card locks are released only after Wolfsburg materialization.
 - Provider-user credit return is full remaining balance with a live
   TigerBeetle optimistic guard; arbitrary partial return is unsupported.
-- Single-user onboarding is synchronous; bulk processing is asynchronous only
-  at the file-job boundary.
+- Existing-card onboarding is synchronous. New physical issuance returns `202`
+  and completes through the bank MinIO batch workflow; bulk processing is
+  asynchronous at the file-job boundary.
 - Provider-facing events use the shared public contract and never contain
   internal/secret/OTel data.
 - WSO2 is the public trust boundary, but Wurzburg repeats resource/business

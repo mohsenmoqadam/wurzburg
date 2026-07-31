@@ -144,6 +144,15 @@ enabled = true
 batch_size = 50
 poll_interval_ms = 1000
 
+[object_storage]
+endpoint = "http://127.0.0.1:9000"
+region = "us-east-1"
+access_key = "minioadmin"
+secret_key = "minioadmin"
+card_issuance_bucket = "wurzburg-card-issuance"
+max_upload_bytes = 10485760
+batch_retention_days = 30
+
 [telemetry]
 enabled = true
 service_name = "wurzburg"

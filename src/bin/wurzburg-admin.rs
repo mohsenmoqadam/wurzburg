@@ -4,6 +4,7 @@ use wurzburg::{
     config::{MigrationConfig, Settings},
     db::oracle::{prepare_oracle_schema, verify_oracle_schema},
     kafka::AppKafkaAdmin,
+    object_storage::{ObjectStorage, initialize_bucket},
     telemetry,
 };
 
@@ -35,17 +36,35 @@ async fn run(settings: &Settings, arguments: Vec<String>) -> Result<()> {
         ["db", "verify"] => verify_database(settings).await,
         ["kafka", "verify"] => verify_kafka(settings),
         ["dragonfly", "verify"] => verify_dragonfly(settings).await,
+        ["object-storage", "init"] => initialize_object_storage(settings).await,
+        ["object-storage", "verify"] => verify_object_storage(settings).await,
         ["dependencies", "verify"] => {
             verify_kafka(settings)?;
-            verify_dragonfly(settings).await
+            verify_dragonfly(settings).await?;
+            verify_object_storage(settings).await
         }
         ["doctor"] => {
             verify_database(settings).await?;
             verify_kafka(settings)?;
-            verify_dragonfly(settings).await
+            verify_dragonfly(settings).await?;
+            verify_object_storage(settings).await
         }
         _ => bail!(usage()),
     }
+}
+
+async fn initialize_object_storage(settings: &Settings) -> Result<()> {
+    initialize_bucket(&settings.object_storage).await?;
+    tracing::info!("MinIO application bucket is ready");
+    Ok(())
+}
+
+async fn verify_object_storage(settings: &Settings) -> Result<()> {
+    ObjectStorage::new(&settings.object_storage)?
+        .verify_bucket()
+        .await?;
+    tracing::info!("MinIO bucket verification succeeded");
+    Ok(())
 }
 
 async fn migrate_database(settings: &Settings, reset: bool) -> Result<()> {
@@ -99,5 +118,5 @@ async fn verify_dragonfly(settings: &Settings) -> Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: wurzburg-admin <db migrate|db verify|db reset --confirm-non-production-reset|kafka verify|dragonfly verify|dependencies verify|doctor>"
+    "usage: wurzburg-admin <db migrate|db verify|db reset --confirm-non-production-reset|kafka verify|dragonfly verify|object-storage init|object-storage verify|dependencies verify|doctor>"
 }

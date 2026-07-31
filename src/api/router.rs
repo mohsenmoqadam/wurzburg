@@ -5,8 +5,8 @@ use axum::{
 use std::sync::Arc;
 
 use super::handlers::{
-    audit_logs, card_policies, card_ranges, provider_events, provider_fees, provider_identity,
-    provider_operational_profiles, providers, system,
+    audit_logs, card_issuance, card_policies, card_ranges, provider_events, provider_fees,
+    provider_identity, provider_operational_profiles, provider_users, providers, system,
 };
 use crate::telemetry::http::trace_http_request;
 use crate::{api::cors::manual_cors_middleware, state::AppState};
@@ -16,6 +16,43 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
     let system_routes = Router::new().route("/db-health", get(system::db_health));
 
     let api_router = Router::new()
+        .route(
+            "/admin/card-issuance-batches",
+            post(card_issuance::create_card_issuance_batch)
+                .get(card_issuance::list_card_issuance_batches),
+        )
+        .route(
+            "/admin/card-issuance-batches/{batch_id}",
+            get(card_issuance::get_card_issuance_batch),
+        )
+        .route(
+            "/admin/card-issuance-batches/{batch_id}/request-file",
+            get(card_issuance::download_card_issuance_request_file),
+        )
+        .route(
+            "/admin/card-issuance-batches/{batch_id}/result-file",
+            post(card_issuance::upload_card_issuance_result_file),
+        )
+        .route(
+            "/admin/card-issuance-batches/{batch_id}/result",
+            get(card_issuance::get_card_issuance_batch_result),
+        )
+        .route(
+            "/providers/{provider_id}/users",
+            post(provider_users::enroll_provider_user).get(provider_users::list_provider_users),
+        )
+        .route(
+            "/providers/{provider_id}/users/{user_id}",
+            get(provider_users::get_provider_user),
+        )
+        .route(
+            "/users/{user_id}/cards",
+            get(provider_users::list_user_cards),
+        )
+        .route(
+            "/users/{user_id}/providers",
+            get(provider_users::list_user_providers),
+        )
         .route(
             "/providers/{provider_id}/operational-profile",
             get(provider_operational_profiles::get_current_provider_operational_profile),

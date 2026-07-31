@@ -9,7 +9,14 @@ use std::{
 use tokio::net::TcpListener;
 use uuid::Uuid;
 use wurzburg::{
-    api::router::build_app_router, config::Settings, db::oracle::prepare_oracle_schema,
+    api::router::build_app_router,
+    config::Settings,
+    db::oracle::prepare_oracle_schema,
+    domain::{
+        card_policy::PolicyMaterializationReceipt, provider_fee::ProviderFeeMaterializationReceipt,
+    },
+    kafka::contract::RuntimeMaterializationReceipt,
+    object_storage::initialize_bucket,
     state::AppState,
 };
 
@@ -25,6 +32,9 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     support::init_test_tracing();
 
     let settings = Settings::new().expect("integration settings should load");
+    initialize_bucket(&settings.object_storage)
+        .await
+        .expect("MinIO card-issuance bucket should be ready");
     prepare_oracle_schema(&settings.database, &settings.migrations)
         .await
         .expect("Oracle schema should be prepared");
@@ -174,9 +184,19 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
         .send()
         .await
         .unwrap();
-    assert_eq!(fee_response.status(), reqwest::StatusCode::CREATED);
+    let fee_status = fee_response.status();
+    let fee_text = fee_response.text().await.unwrap();
+    assert_eq!(fee_status, reqwest::StatusCode::CREATED, "{fee_text}");
+    let fee_profile_id = Uuid::parse_str(
+        serde_json::from_str::<serde_json::Value>(&fee_text).unwrap()["profile"]
+            ["provider_fee_profile_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
 
-    let card_range_id = create_range_and_policy(&client, address).await;
+    let (card_range_id, card_policy_profile_id, issued_pan) =
+        create_range_and_policy(&client, address).await;
     let assignment_body = serde_json::json!({
         "card_range_id": card_range_id,
         "reason": "initial provider eligibility"
@@ -205,9 +225,226 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
         "{assignment_text}"
     );
     let assignment: serde_json::Value = serde_json::from_str(&assignment_text).unwrap();
-    assert!(assignment["policy_operation_id"].is_string());
-    assert!(assignment["fee_operation_id"].is_string());
-    assert!(assignment["range_control_operation_id"].is_string());
+    let policy_operation_id = value_uuid(&assignment, "policy_operation_id");
+    let fee_operation_id = value_uuid(&assignment, "fee_operation_id");
+    let range_operation_id = value_uuid(&assignment, "range_control_operation_id");
+    let (range_status, range_body) = get_json(
+        &client,
+        address,
+        &format!("/api/v1/card-ranges/{card_range_id}"),
+        "provider-range-after-assignment",
+    )
+    .await;
+    assert_eq!(range_status, reqwest::StatusCode::OK, "{range_body}");
+    let range_operational_version = serde_json::from_str::<serde_json::Value>(&range_body).unwrap()
+        ["operational_version"]
+        .as_i64()
+        .unwrap();
+
+    repository
+        .apply_policy_materialization_receipt(PolicyMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: policy_operation_id,
+            card_range_id,
+            card_policy_profile_id,
+            materialized_version: 1,
+            runtime_key: format!("CPOL:SingleProvider:{card_range_id}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("policy receipt should activate the policy");
+    repository
+        .apply_provider_fee_materialization_receipt(ProviderFeeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: fee_operation_id,
+            provider_id,
+            provider_fee_profile_id: fee_profile_id,
+            materialized_version: 1,
+            runtime_key: format!("FEE:{provider_id}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("fee receipt should activate the fee profile");
+    repository
+        .apply_range_control_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: range_operation_id,
+            profile_type: "CRCTL".to_string(),
+            aggregate_id: card_range_id,
+            profile_id: None,
+            materialized_version: range_operational_version,
+            runtime_key: format!("CRCTL:{card_range_id}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("range receipt should finalize provider eligibility");
+
+    let (range_activate_status, range_activate_body) = post_json(
+        &client,
+        address,
+        &format!("/api/v1/card-ranges/{card_range_id}/activate"),
+        &Uuid::new_v4().to_string(),
+        "provider-range-activate",
+        &serde_json::json!({"reason":"issuance integration scenario"}).to_string(),
+    )
+    .await;
+    assert_eq!(
+        range_activate_status,
+        reqwest::StatusCode::ACCEPTED,
+        "{range_activate_body}"
+    );
+
+    let enrollment_key = Uuid::new_v4().to_string();
+    let enrollment_body = serde_json::json!({
+        "national_id":"0013547852",
+        "first_name":"Integration",
+        "last_name":"Cardholder",
+        "provider_customer_reference":format!("customer-{provider_id}"),
+        "selection_reference":format!("selection-{provider_id}"),
+        "card_instruction":{
+            "type":"ISSUE_NEW",
+            "birth_date":"1990-01-01",
+            "mobile":"09120000000",
+            "delivery_province":"Tehran",
+            "delivery_city":"Tehran",
+            "delivery_address":"Integration delivery address",
+            "postal_code":"1234567890"
+        },
+        "metadata":{}
+    })
+    .to_string();
+    let (enroll_status, enroll_body) = post_json(
+        &client,
+        address,
+        &format!("/api/v1/providers/{provider_id}/users"),
+        &enrollment_key,
+        "provider-user-enroll",
+        &enrollment_body,
+    )
+    .await;
+    assert_eq!(
+        enroll_status,
+        reqwest::StatusCode::ACCEPTED,
+        "{enroll_body}"
+    );
+    let enrolled: serde_json::Value = serde_json::from_str(&enroll_body).unwrap();
+    let user_id = value_uuid(&enrolled, "user_id");
+    let issuance_request_id = value_uuid(&enrolled, "issuance_request_id");
+
+    let (batch_status, batch_body) = post_json(
+        &client,
+        address,
+        "/api/v1/admin/card-issuance-batches",
+        &Uuid::new_v4().to_string(),
+        "issuance-batch-create",
+        &serde_json::json!({"batch_size":50}).to_string(),
+    )
+    .await;
+    assert_eq!(batch_status, reqwest::StatusCode::CREATED, "{batch_body}");
+    let batch: serde_json::Value = serde_json::from_str(&batch_body).unwrap();
+    let batch_id = value_uuid(&batch, "batch_id");
+
+    let duplicate_result_csv = format!(
+        "issuance_request_id,status,card_number,issuer_reference,failure_code,failure_message,produced_at,dispatched_at,tracking_reference\n{issuance_request_id},REJECTED,,,BANK_REJECTED,,,,\n{issuance_request_id},REJECTED,,,BANK_REJECTED,,,,\n"
+    );
+    let duplicate_response = upload_result_file(
+        &client,
+        address,
+        batch_id,
+        &Uuid::new_v4().to_string(),
+        "issuance-result-duplicate-row",
+        duplicate_result_csv,
+    )
+    .await;
+    assert_eq!(
+        duplicate_response.0,
+        reqwest::StatusCode::BAD_REQUEST,
+        "{}",
+        duplicate_response.1
+    );
+    assert!(
+        duplicate_response
+            .1
+            .contains("CARD_ISSUANCE_RESULT_CONTRACT_INVALID")
+    );
+
+    let result_csv = format!(
+        "issuance_request_id,status,card_number,issuer_reference,failure_code,failure_message,produced_at,dispatched_at,tracking_reference\n{issuance_request_id},ISSUED,{issued_pan},issuer-1,,,,,tracking-1\n"
+    );
+    let (result_status, result_body) = upload_result_file(
+        &client,
+        address,
+        batch_id,
+        &Uuid::new_v4().to_string(),
+        "issuance-result-upload",
+        result_csv,
+    )
+    .await;
+    assert_eq!(result_status, reqwest::StatusCode::OK, "{result_body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&result_body).unwrap()["issued_count"],
+        1
+    );
+
+    let (cards_status, cards_body) = get_json(
+        &client,
+        address,
+        &format!("/api/v1/users/{user_id}/cards"),
+        "user-card-list",
+    )
+    .await;
+    assert_eq!(cards_status, reqwest::StatusCode::OK, "{cards_body}");
+    let cards: serde_json::Value = serde_json::from_str(&cards_body).unwrap();
+    assert_eq!(cards.as_array().unwrap().len(), 1);
+    assert_eq!(cards[0]["provider_ids"][0], provider_id.to_string());
+
+    let card_id = Uuid::parse_str(cards[0]["card_id"].as_str().unwrap()).unwrap();
+    let usage = wurzburg::domain::user_card::PolicyUsageAccountIds::for_card(card_id);
+    for id in usage.ordered() {
+        assert_eq!(
+            tb_client.lookup_account(id.as_u128()).await.unwrap().len(),
+            1
+        );
+    }
+
+    let (provider_user_status, provider_user_body) = get_json(
+        &client,
+        address,
+        &format!("/api/v1/providers/{provider_id}/users/{user_id}"),
+        "provider-user-read-after-issuance",
+    )
+    .await;
+    assert_eq!(
+        provider_user_status,
+        reqwest::StatusCode::OK,
+        "{provider_user_body}"
+    );
+    let provider_user: serde_json::Value = serde_json::from_str(&provider_user_body).unwrap();
+    assert_eq!(provider_user["status"], "ACTIVE");
+    let provider_user_account_id = value_uuid(&provider_user, "provider_user_account_id");
+    let provider_user_accounts = tb_client
+        .lookup_account(provider_user_account_id.as_u128())
+        .await
+        .expect("provider-user TigerBeetle lookup should succeed");
+    assert_eq!(provider_user_accounts.len(), 1);
+
+    let projection = load_card_projection_payload(&repository.pool, card_id).await;
+    assert_eq!(projection["payload"]["card_id"], card_id.to_string());
+    assert_eq!(
+        projection["payload"]["funding_sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        projection["payload"]["funding_sources"][0]["ledger_accounts"]["user_provider_account"],
+        provider_user_account_id.to_string()
+    );
+    let projection_text = projection.to_string();
+    assert!(!projection_text.contains(&issued_pan));
+    assert!(!projection_text.contains("0013547852"));
+    assert!(!projection_text.contains("Integration"));
 
     let mappings = repository
         .get_provider_ledger_mappings(provider_id)
@@ -250,7 +487,10 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     assert!(conflict_body.contains("IDEMPOTENCY_KEY_CONFLICT"));
 }
 
-async fn create_range_and_policy(client: &reqwest::Client, address: std::net::SocketAddr) -> Uuid {
+async fn create_range_and_policy(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+) -> (Uuid, Uuid, String) {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -313,7 +553,15 @@ async fn create_range_and_policy(client: &reqwest::Client, address: std::net::So
     let policy_status = response.status();
     let policy_text = response.text().await.unwrap();
     assert_eq!(policy_status, reqwest::StatusCode::CREATED, "{policy_text}");
-    range_id
+    let policy_id = value_uuid(
+        &serde_json::from_str::<serde_json::Value>(&policy_text).unwrap()["profile"],
+        "card_policy_profile_id",
+    );
+    (range_id, policy_id, start)
+}
+
+fn value_uuid(value: &serde_json::Value, field: &str) -> Uuid {
+    Uuid::parse_str(value[field].as_str().expect("UUID field should exist")).unwrap()
 }
 
 async fn post_json(
@@ -361,6 +609,53 @@ async fn get_json(
     let status = response.status();
     let text = response.text().await.expect("read response should read");
     (status, text)
+}
+
+async fn upload_result_file(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    batch_id: Uuid,
+    idempotency_key: &str,
+    correlation_id: &str,
+    body: String,
+) -> (reqwest::StatusCode, String) {
+    let response = client
+        .post(format!(
+            "http://{address}/api/v1/admin/card-issuance-batches/{batch_id}/result-file"
+        ))
+        .bearer_auth(support::signed_platform_admin_jwt())
+        .header("Idempotency-Key", idempotency_key)
+        .header("X-Correlation-Id", correlation_id)
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "text/csv")
+        .body(body)
+        .send()
+        .await
+        .expect("issuance result upload should complete");
+    let status = response.status();
+    let body = response.text().await.expect("issuance result should read");
+    (status, body)
+}
+
+async fn load_card_projection_payload(
+    pool: &wurzburg::db::oracle::OraclePool,
+    card_id: Uuid,
+) -> serde_json::Value {
+    let card_raw = wurzburg::db::oracle::types::uuid_to_raw16(card_id).to_vec();
+    pool.with_connection(move |connection| {
+        let payload: String = connection
+            .query_row_as(
+                "SELECT JSON_SERIALIZE(payload_json RETURNING CLOB) FROM integration_outbox WHERE aggregate_id=:1 AND event_type='CARD_PROFILE_PUBLISH_REQUESTED' ORDER BY created_at DESC FETCH FIRST 1 ROW ONLY",
+                &[&card_raw],
+            )
+            .map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        serde_json::from_str(&payload)
+            .map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))
+    })
+    .await
+    .expect("card projection outbox payload should load")
 }
 
 fn provider_body(marker: &str) -> String {

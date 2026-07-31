@@ -45,6 +45,35 @@ async fn rejects_and_rolls_back_provider_failure_paths() {
     let address = start_server(state).await;
     let client = reqwest::Client::new();
 
+    let invalid_enrollment_key = Uuid::new_v4().to_string();
+    let (status, body) = post_json(
+        &client,
+        address,
+        &format!("/api/v1/providers/{}/users", Uuid::new_v4()),
+        &invalid_enrollment_key,
+        "provider-user-invalid-national-id",
+        &serde_json::json!({
+            "national_id": "1111111111",
+            "first_name": "Invalid",
+            "last_name": "Identity",
+            "provider_customer_reference": "invalid-national-id",
+            "selection_reference": "selection-evidence",
+            "card_instruction": {
+                "type": "USE_EXISTING",
+                "card_number": "6219861000000001"
+            },
+            "metadata": {}
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("PROVIDER_USER_CONTRACT_INVALID"));
+    assert_eq!(
+        count_idempotency(&repository.pool, &invalid_enrollment_key).await,
+        0
+    );
+
     let (status, body) = get_json(
         &client,
         address,

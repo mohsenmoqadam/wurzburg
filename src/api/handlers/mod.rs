@@ -1,9 +1,11 @@
 pub mod audit_logs;
+pub mod card_issuance;
 pub mod card_policies;
 pub mod card_ranges;
 pub mod provider_events;
 pub mod provider_fees;
 pub mod provider_identity;
 pub mod provider_operational_profiles;
+pub mod provider_users;
 pub mod providers;
 pub mod system;

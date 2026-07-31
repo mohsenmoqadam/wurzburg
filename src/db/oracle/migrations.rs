@@ -40,6 +40,17 @@ impl OracleMigrator {
                         ))
                     })?;
                 for table_name in [
+                    "card_issuance_batch_rows",
+                    "card_issuance_request_providers",
+                    "card_issuance_requests",
+                    "card_issuance_batches",
+                    "card_provider_funding_sources",
+                    "card_policy_usage_accounts",
+                    "cards",
+                    "provider_user_accounts",
+                    "provider_users",
+                    "users",
+                    "user_identity_allocation_locks",
                     "runtime_materialization_receipts",
                     "card_policy_profiles",
                     "card_range_providers",
@@ -252,6 +263,7 @@ pub fn wurzburg_migrations() -> Vec<OracleMigration> {
     let v002_sql = include_str!("../../../migrations/oracle/V002__provider_foundation.sql");
     let v003_sql =
         include_str!("../../../migrations/oracle/V003__card_range_policy_foundation.sql");
+    let v004_sql = include_str!("../../../migrations/oracle/V004__provider_users_and_cards.sql");
 
     vec![
         OracleMigration {
@@ -274,6 +286,13 @@ pub fn wurzburg_migrations() -> Vec<OracleMigration> {
             checksum: sql_checksum(v003_sql),
             legacy_checksum: None,
             sql: v003_sql,
+        },
+        OracleMigration {
+            version: "V004",
+            description: "provider_users_and_cards",
+            checksum: sql_checksum(v004_sql),
+            legacy_checksum: None,
+            sql: v004_sql,
         },
     ]
 }
@@ -351,6 +370,8 @@ mod tests {
         assert_eq!(migrations[1].description, "provider_foundation");
         assert_eq!(migrations[2].version, "V003");
         assert_eq!(migrations[2].description, "card_range_policy_foundation");
+        assert_eq!(migrations[3].version, "V004");
+        assert_eq!(migrations[3].description, "provider_users_and_cards");
     }
 
     #[test]
@@ -410,6 +431,49 @@ mod tests {
         assert!(migration.sql.contains("CREATE TABLE card_policy_profiles"));
         assert!(migration.sql.contains("uq_cpp_one_candidate"));
         assert!(migration.sql.contains("ck_cpp_lifecycle_shape"));
+    }
+
+    #[test]
+    fn provider_user_card_migration_contains_identity_and_cardinality_guards() {
+        let migration = wurzburg_migrations()
+            .into_iter()
+            .find(|migration| migration.version == "V004")
+            .expect("provider-user/card migration should exist");
+
+        assert!(migration.sql.contains("CREATE TABLE users"));
+        assert!(migration.sql.contains("CREATE TABLE provider_users"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE provider_user_accounts")
+        );
+        assert!(migration.sql.contains("CREATE TABLE cards"));
+        assert!(migration.sql.contains("uq_cards_one_active_per_user_range"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE card_policy_usage_accounts")
+        );
+        assert!(migration.sql.contains("amount_daily_account_id"));
+        assert!(migration.sql.contains("count_yearly_account_id"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE card_provider_funding_sources")
+        );
+        assert!(migration.sql.contains("uq_cpfs_account_one_active_card"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE card_issuance_requests")
+        );
+        assert!(migration.sql.contains("uq_cir_one_open_per_user_range"));
+        assert!(migration.sql.contains("CREATE TABLE card_issuance_batches"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE card_issuance_batch_rows")
+        );
     }
 
     #[test]

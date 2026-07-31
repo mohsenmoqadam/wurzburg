@@ -202,6 +202,8 @@ platform.providers:write
 platform.audit:read
 platform.card_ranges:read
 platform.card_ranges:write
+platform.card_issuance:read
+platform.card_issuance:write
 platform.policies:read
 platform.policies:write
 platform.fee_profiles:read
@@ -244,7 +246,9 @@ Provider Kafka credential read               provider.kafka_credentials:read
 Provider Kafka access/job status              provider.kafka_credentials:read
 Provider Kafka provision/rotate/suspend      provider.kafka_credentials:rotate
 Provider user/card reads                     provider.users:read/provider.cards:read
-Provider user onboarding/card replacement    provider.users:write/provider.cards:write
+Provider user onboarding                     provider.users:write
+Provider card reprint/replacement             provider.cards:write
+Bank issuance batch read/write                platform.card_issuance:read/write
 Provider live credit read                     provider.funding:read
 Provider credit grant/full return            provider.funding:write
 Provider transaction reads                   provider.transactions:read
@@ -293,14 +297,25 @@ WSO2 behavior:
 File upload endpoints require idempotency on job creation and upload-finalize
 commands. Streaming body transport itself is not replayed by WSO2.
 
+Card issuance routes require `platform.card_issuance:read` or
+`platform.card_issuance:write` as appropriate. WSO2 preserves `text/csv`
+without JSON transformation for request-file download and result-file upload,
+enforces the configured upload limit, and uses the file-operation timeouts
+below.
+
 ## 8. Synchronous And Asynchronous APIs
 
 WSO2 must preserve Wurzburg status codes and bodies:
 
-- Provider creation is asynchronous and normally returns `202` plus an
-  operation/provisioning resource.
-- Single provider-user onboarding is synchronous and may include deterministic
-  TigerBeetle account provisioning before its final response.
+- Provider creation synchronously verifies its four deterministic TigerBeetle
+  accounts and returns the Provider resource. Provider Kafka administration is
+  a separate asynchronous provisioning state.
+- Provider-user onboarding with `USE_EXISTING` is synchronous and returns `201`
+  only after deterministic TigerBeetle account verification and durable CP
+  publication intent.
+- Provider-user onboarding with `ISSUE_NEW` returns `202` with a durable
+  issuance request ID. Physical issuance completes through platform-admin CSV
+  APIs backed by MinIO.
 - Credit grant and full-balance credit return are synchronous WAL commands.
   They return `200/201` when mandatory Kafka publication is acknowledged or
   `202` when the financial effect is applied but publication/recovery is still
@@ -316,7 +331,7 @@ Initial upstream timeouts:
 Connect to Wurzburg                    2 seconds
 Normal reads                          15 seconds
 Normal Oracle-only mutations          30 seconds
-Onboarding/credit WAL commands         45 seconds
+Existing-card onboarding/credit WAL    45 seconds
 Provider creation/job creation        15 seconds
 File upload                            120 seconds
 Authorized file download/streaming    300 seconds

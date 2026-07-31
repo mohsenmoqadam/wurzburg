@@ -196,13 +196,34 @@ currently materialized version. Equal versions are idempotent replays.
 ## 6. Card Profile Materialization
 
 Wurzburg and Nuremberg events may request `CP:{card_number}` refresh. Wolfsburg
-rebuilds CP from canonical Oracle relationships and live TigerBeetle balances;
-it does not trust a stale CP payload embedded in the event.
+must not query the Wurzburg Oracle schema. A Wurzburg
+`CARD_PROFILE_PUBLISH_REQUESTED` command carries the complete, balance-free
+canonical relationship/account snapshot required for the requested card state:
+
+```text
+card_id, user_id, card_range_id, funding_mode, state_version
+all eight policy_usage_accounts
+funding_sources[] ordered by priority:
+  provider_id
+  priority
+  optional max_amount_rials cardholder cap
+  user_provider_account
+  provider_fee_account
+  cms_settlement_account
+  platform_fee_account
+```
+
+The internal Kafka record key is the normalized PAN for same-card ordering; PAN
+is not duplicated in the event payload. Wolfsburg combines the snapshot with
+live TigerBeetle balances. It never trusts a cached balance or a prebuilt CP
+value from the command.
 
 Wolfsburg must:
 
 - preserve same-card ordering using normalized card number as partition key;
 - read balances only from TigerBeetle;
+- reject a command whose source list/cardinality/account mapping violates the
+  documented CP contract;
 - never persist debit/credit balances in Oracle;
 - compute funding-source capacity from current ledger facts and configured
   cardholder caps;
@@ -265,14 +286,21 @@ For CPOL, a valid receipt causes one Wurzburg Oracle transaction to:
 
 - persist the receipt;
 - mark the materialized DRAFT policy ACTIVE;
+- mark the previous ACTIVE policy SUPERSEDED;
+- complete the associated operation; and
+- write immutable audit evidence.
 
 For FEE, the same transaction shape persists the receipt, supersedes the prior
 ACTIVE provider fee profile, activates the matching frozen DRAFT, records audit
 evidence, and completes inbox processing. A mismatch leaves the prior ACTIVE
 profile unchanged.
-- mark the previous ACTIVE policy SUPERSEDED;
-- complete the associated operation; and
-- write immutable audit evidence.
+
+For CP, a valid receipt has `profile_type = CP`, no `profile_id`,
+`aggregate_id = card_id`, the exact pending operation ID and state version, and
+`runtime_key = CP:{card_number}`. Wurzburg atomically advances
+`cards.materialized_version`, records the receipt/inbox evidence, and clears the
+matching pending publication operation. Stale or mismatched receipts fail
+closed and cannot advance card state.
 
 ## 9. Delivery And Recovery
 

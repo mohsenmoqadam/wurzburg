@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use deadpool_redis::{Config as RedisConfig, Pool as RedisPool, PoolConfig, Runtime};
+use deadpool_redis::{Config as RedisConfig, PoolConfig, Runtime};
 use std::sync::Arc;
 
 use crate::config::Settings;
@@ -7,27 +7,18 @@ use crate::db::oracle::{
     OracleConnectConfig, OracleHealthRepository, OraclePool, OracleRepository,
 };
 use crate::kafka::{AppKafkaAdmin, AppKafkaProducer};
+use crate::object_storage::ObjectStorage;
 use crate::security::provider_kafka_cipher::ProviderKafkaCredentialFactory;
-use crate::tigerbeetle::{AppTbClient, TigerBeetleWorkerHandle, start_tb_worker};
+use crate::tigerbeetle::{AppTbClient, start_tb_worker};
 
-#[derive(Clone)]
-pub struct AppState {
-    pub config: Arc<Settings>,
-    pub db: Arc<OracleRepository>,
-    pub oracle_health: Option<OracleHealthRepository>,
-    pub redis: RedisPool,
-    pub kafka_producer: AppKafkaProducer,
-    pub kafka_admin: AppKafkaAdmin,
-    pub tb_client: AppTbClient,
-    pub tb_worker: TigerBeetleWorkerHandle,
-    pub provider_kafka_credentials: Option<Arc<ProviderKafkaCredentialFactory>>,
-}
+use super::AppState;
 
 impl AppState {
+    /// Builds all process-level dependency clients. Infrastructure creation is
+    /// intentionally excluded and belongs to explicit deployment init jobs.
     pub async fn new(config: Settings) -> Result<Self> {
         let config_arc = Arc::new(config.clone());
 
-        // 1. Setup Oracle pool. Wurzburg is Oracle-only for final persistence.
         let oracle_config = OracleConnectConfig::from_driver_config(&config.database)
             .context("Invalid Oracle database configuration")?;
         let oracle_pool = OraclePool::connect(oracle_config)
@@ -36,16 +27,12 @@ impl AppState {
         let oracle_health = OracleHealthRepository::new(oracle_pool.clone());
         let db = Arc::new(OracleRepository::new(oracle_pool));
 
-        // 2. Setup Redis Pool
-        let mut redis_cfg = RedisConfig::from_url(config.redis.url.clone());
-        // Configure deadpool max size based on config
-        redis_cfg.pool = Some(PoolConfig::new(config.redis.pool_max_open as usize));
-
-        let redis = redis_cfg
+        let mut redis_config = RedisConfig::from_url(config.redis.url.clone());
+        redis_config.pool = Some(PoolConfig::new(config.redis.pool_max_open as usize));
+        let redis = redis_config
             .create_pool(Some(Runtime::Tokio1))
             .context("Failed to create Redis pool")?;
 
-        // 3. Setup Kafka Clients
         let kafka_producer = AppKafkaProducer::new(&config.kafka)?;
         let kafka_admin = AppKafkaAdmin::new(&config.kafka)?;
         let provider_kafka_credentials = config
@@ -66,9 +53,9 @@ impl AppState {
             })?
             .map(Arc::new);
 
-        // 4. Setup TigerBeetle Client & Background Worker
         let (tb_client, tb_receiver) = AppTbClient::new(&config)?;
         let tb_worker = start_tb_worker(config_arc.clone(), tb_receiver);
+        let object_storage = Arc::new(ObjectStorage::new(&config.object_storage)?);
 
         Ok(Self {
             config: config_arc,
@@ -80,6 +67,7 @@ impl AppState {
             tb_client,
             tb_worker,
             provider_kafka_credentials,
+            object_storage,
         })
     }
 }

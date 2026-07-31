@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod card_issuance;
 pub mod card_policy;
 pub mod card_range;
 pub mod provider;
@@ -8,3 +9,4 @@ pub mod provider_identity;
 pub mod provider_kafka;
 pub mod provider_operational_profile;
 pub mod provider_provisioning;
+pub mod provider_user;

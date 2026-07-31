@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod domain;
 pub mod kafka;
+pub mod object_storage;
 pub mod security;
 pub mod services;
 pub mod state;

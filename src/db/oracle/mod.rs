@@ -1,5 +1,8 @@
 pub mod audit;
+pub mod card_issuance;
+pub mod card_issuance_result;
 pub mod card_policy;
+pub mod card_profile;
 pub mod card_range;
 pub mod card_range_command;
 pub mod health;
@@ -18,15 +21,21 @@ pub mod provider_lifecycle;
 pub mod provider_operational_profile;
 pub mod provider_provisioning;
 pub mod provider_range;
+pub mod provider_user;
 pub mod range_control;
 pub mod repository;
 pub mod transaction;
 pub mod types;
 
+pub use card_issuance::PrepareCardIssuanceBatchOutcome;
+pub use card_issuance_result::{
+    BeginIssuanceResultOutcome, IssuedCardProvisioningIntent, PrepareIssuedCardOutcome,
+};
 pub use card_policy::{
     PolicyMutationDisposition, PolicyReceiptPersistenceOutcome, SetCardPolicyPersistenceOutcome,
     SetCardPolicyResult,
 };
+pub use card_profile::CardProfileReceiptOutcome;
 pub use card_range::CreateCardRangePersistenceOutcome;
 pub use card_range_command::{
     CardRangeMutation, CardRangeMutationPersistenceOutcome, CardRangeMutationResult,
@@ -61,5 +70,6 @@ pub use provider_operational_profile::{
 };
 pub use provider_provisioning::ClaimedProviderProvisioningJob;
 pub use provider_range::{ProviderRangeAssignmentOutcome, ProviderRangeAssignmentResult};
+pub use provider_user::{EnrollProviderUserPersistenceOutcome, ExistingCardProvisioningIntent};
 pub use range_control::RangeControlReceiptOutcome;
 pub use repository::OracleRepository;

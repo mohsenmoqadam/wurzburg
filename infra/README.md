@@ -40,6 +40,7 @@ Useful focused commands:
 make dev-infra-up
 make dev-infra-reset CONFIRM=reset-local-infrastructure
 make dev-kafka-init
+make dev-object-storage-init
 make dev-db-migrate
 make dev-db-reset
 make dev-verify
@@ -50,6 +51,14 @@ make dev-infra-down
 Dragonfly, MinIO, TigerBeetle, and telemetry data. Its confirmation value is
 mandatory. It does not reset the external Oracle schema; use `make dev-reset`
 for that separate operation.
+
+`dev-object-storage-init` creates or verifies the configured MinIO bucket using
+the same application credentials as Wurzburg. It is idempotent and is included
+by `make dev-init` and `make dev-reset`. Normal Wurzburg server processes only
+verify/use the bucket; they never create infrastructure during startup. In
+container, test, and staging deployment this command runs as a one-shot admin
+job. The equivalent Kubernetes initialization Job must complete before the
+Wurzburg Deployment accepts card-issuance file traffic.
 
 ## Kafka Contract
 
