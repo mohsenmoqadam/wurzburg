@@ -5,7 +5,7 @@ use crate::{
         error::{DbError, DbResult},
         oracle::{OracleRepository, types::uuid_to_raw16},
     },
-    kafka::contract::RuntimeMaterializationReceipt,
+    messaging::contract::RuntimeMaterializationReceipt,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

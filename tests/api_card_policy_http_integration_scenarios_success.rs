@@ -13,7 +13,7 @@ use wurzburg::{
         prepare_oracle_schema,
     },
     domain::card_policy::PolicyMaterializationReceipt,
-    kafka::contract::RuntimeMaterializationReceipt,
+    messaging::contract::RuntimeMaterializationReceipt,
     state::AppState,
 };
 

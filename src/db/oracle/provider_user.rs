@@ -26,7 +26,7 @@ use crate::{
             deterministic_provider_user_account_id, mask_card_number,
         },
     },
-    kafka::contract::{InternalEventEnvelope, InternalEventHeaders},
+    messaging::contract::{InternalEventEnvelope, InternalEventHeaders},
 };
 
 #[derive(Debug, Clone)]

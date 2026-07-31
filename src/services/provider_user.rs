@@ -17,7 +17,7 @@ use crate::{
         provider::{ProviderOperationalProfileRecord, ProviderWeekday},
         user_card::{NewProviderUserEnrollment, PolicyUsageAccountCategory, ProviderUserView},
     },
-    tigerbeetle::{AppAccount, AppTbClient, TigerBeetleError},
+    ledger::{LedgerAccount, LedgerClient, TigerBeetleError},
 };
 
 #[derive(Debug, Clone)]
@@ -30,20 +30,20 @@ pub enum EnrollProviderUserOutcome {
 #[derive(Clone)]
 pub struct ProviderUserService {
     repository: Arc<OracleRepository>,
-    tb_client: AppTbClient,
-    tb_config: TigerBeetleConfig,
+    ledger_client: LedgerClient,
+    ledger_config: TigerBeetleConfig,
 }
 
 impl ProviderUserService {
     pub fn new(
         repository: Arc<OracleRepository>,
-        tb_client: AppTbClient,
-        tb_config: TigerBeetleConfig,
+        ledger_client: LedgerClient,
+        ledger_config: TigerBeetleConfig,
     ) -> Self {
         Self {
             repository,
-            tb_client,
-            tb_config,
+            ledger_client,
+            ledger_config,
         }
     }
 
@@ -234,7 +234,7 @@ impl ProviderUserService {
         &self,
         intent: &ExistingCardProvisioningIntent,
     ) -> Result<(), TigerBeetleError> {
-        let provider_user = AppAccount {
+        let provider_user = LedgerAccount {
             id: intent.provider_user_account_id.as_u128(),
             debits_pending: 0,
             debits_posted: 0,
@@ -244,8 +244,8 @@ impl ProviderUserService {
             user_data_64: 0,
             user_data_32: 0,
             reserved: 0,
-            ledger: self.tb_config.ledger_id,
-            code: self.tb_config.user_account_code,
+            ledger: self.ledger_config.ledger_id,
+            code: self.ledger_config.user_account_code,
             flags: (AccountFlags::History | AccountFlags::DebitsMustNotExceedCredits).bits(),
             timestamp: 0,
         };
@@ -255,7 +255,7 @@ impl ProviderUserService {
             .into_iter()
             .zip(intent.usage_account_ids.ordered())
         {
-            self.create_and_verify(AppAccount {
+            self.create_and_verify(LedgerAccount {
                 id: account_id.as_u128(),
                 debits_pending: 0,
                 debits_posted: 0,
@@ -265,8 +265,8 @@ impl ProviderUserService {
                 user_data_64: 0,
                 user_data_32: category.code(),
                 reserved: 0,
-                ledger: self.tb_config.ledger_id,
-                code: self.tb_config.system_account_code,
+                ledger: self.ledger_config.ledger_id,
+                code: self.ledger_config.system_account_code,
                 flags: AccountFlags::History.bits(),
                 timestamp: 0,
             })
@@ -280,7 +280,7 @@ impl ProviderUserService {
         intent: &crate::db::oracle::IssuedCardProvisioningIntent,
     ) -> Result<(), TigerBeetleError> {
         for provider in &intent.providers {
-            self.create_and_verify(AppAccount {
+            self.create_and_verify(LedgerAccount {
                 id: provider.account_id.as_u128(),
                 debits_pending: 0,
                 debits_posted: 0,
@@ -290,8 +290,8 @@ impl ProviderUserService {
                 user_data_64: 0,
                 user_data_32: 0,
                 reserved: 0,
-                ledger: self.tb_config.ledger_id,
-                code: self.tb_config.user_account_code,
+                ledger: self.ledger_config.ledger_id,
+                code: self.ledger_config.user_account_code,
                 flags: (AccountFlags::History | AccountFlags::DebitsMustNotExceedCredits).bits(),
                 timestamp: 0,
             })
@@ -301,7 +301,7 @@ impl ProviderUserService {
             .into_iter()
             .zip(intent.base.usage_account_ids.ordered())
         {
-            self.create_and_verify(AppAccount {
+            self.create_and_verify(LedgerAccount {
                 id: account_id.as_u128(),
                 debits_pending: 0,
                 debits_posted: 0,
@@ -311,8 +311,8 @@ impl ProviderUserService {
                 user_data_64: 0,
                 user_data_32: category.code(),
                 reserved: 0,
-                ledger: self.tb_config.ledger_id,
-                code: self.tb_config.system_account_code,
+                ledger: self.ledger_config.ledger_id,
+                code: self.ledger_config.system_account_code,
                 flags: AccountFlags::History.bits(),
                 timestamp: 0,
             })
@@ -322,14 +322,14 @@ impl ProviderUserService {
     }
 
     #[tracing::instrument(skip(self, expected), fields(tigerbeetle.operation="create_and_verify", tigerbeetle.account_code=expected.code))]
-    async fn create_and_verify(&self, expected: AppAccount) -> Result<(), TigerBeetleError> {
-        if let Err(error) = self.tb_client.create_account(expected.clone()).await {
+    async fn create_and_verify(&self, expected: LedgerAccount) -> Result<(), TigerBeetleError> {
+        if let Err(error) = self.ledger_client.create_account(expected.clone()).await {
             tracing::warn!(
                 error.kind = error.diagnostic_kind(),
                 "TigerBeetle create outcome requires lookup verification"
             );
         }
-        let accounts = self.tb_client.lookup_account(expected.id).await?;
+        let accounts = self.ledger_client.lookup_account(expected.id).await?;
         let actual = accounts.first().ok_or(TigerBeetleError::ClientFailure {
             operation: "verify_provider_user_account",
         })?;

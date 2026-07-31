@@ -15,8 +15,8 @@ use crate::{
     domain::provider::{
         NewProvider, Provider, ProviderLedgerAccountBalance, ProviderListPage, ProviderListQuery,
     },
+    ledger::{LedgerAccount, LedgerClient, TigerBeetleError},
     security::provider_kafka_cipher::ProviderKafkaCredentialFactory,
-    tigerbeetle::{AppAccount, AppTbClient, TigerBeetleError},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,22 +37,22 @@ pub enum CreateProviderOutcome {
 #[derive(Clone)]
 pub struct ProviderService {
     repository: Arc<OracleRepository>,
-    tb_client: AppTbClient,
-    tb_config: TigerBeetleConfig,
+    ledger_client: LedgerClient,
+    ledger_config: TigerBeetleConfig,
     kafka_credentials: Option<Arc<ProviderKafkaCredentialFactory>>,
 }
 
 impl ProviderService {
     pub fn new(
         repository: Arc<OracleRepository>,
-        tb_client: AppTbClient,
-        tb_config: TigerBeetleConfig,
+        ledger_client: LedgerClient,
+        ledger_config: TigerBeetleConfig,
         kafka_credentials: Option<Arc<ProviderKafkaCredentialFactory>>,
     ) -> Self {
         Self {
             repository,
-            tb_client,
-            tb_config,
+            ledger_client,
+            ledger_config,
             kafka_credentials,
         }
     }
@@ -187,14 +187,18 @@ impl ProviderService {
             .iter()
             .map(|mapping| mapping.tigerbeetle_account_id.as_u128())
             .collect();
-        let accounts = self.tb_client.lookup_accounts(ids).await.map_err(|error| {
-            tracing::error!(
-                provider_id = %provider_id,
-                error.kind = error.diagnostic_kind(),
-                "TigerBeetle provider ledger lookup failed"
-            );
-            ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable)
-        })?;
+        let accounts = self
+            .ledger_client
+            .lookup_accounts(ids)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    provider_id = %provider_id,
+                    error.kind = error.diagnostic_kind(),
+                    "TigerBeetle provider ledger lookup failed"
+                );
+                ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable)
+            })?;
         if accounts.len() != 4 {
             tracing::error!(
                 provider_id = %provider_id,
@@ -213,8 +217,8 @@ impl ProviderService {
                     .find(|account| account.id == account_id)
                     .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderLedgerUnavailable))?;
                 if account.user_data_128 != provider_id.as_u128()
-                    || account.ledger != self.tb_config.ledger_id
-                    || account.code != self.tb_config.provider_account_code(mapping.category)
+                    || account.ledger != self.ledger_config.ledger_id
+                    || account.code != self.ledger_config.provider_account_code(mapping.category)
                 {
                     tracing::error!(
                         provider_id = %provider_id,
@@ -375,7 +379,7 @@ impl ProviderService {
         }
 
         for mapping in mappings {
-            let expected = AppAccount {
+            let expected = LedgerAccount {
                 id: mapping.tigerbeetle_account_id.as_u128(),
                 debits_pending: 0,
                 debits_posted: 0,
@@ -385,13 +389,13 @@ impl ProviderService {
                 user_data_64: 0,
                 user_data_32: 0,
                 reserved: 0,
-                ledger: self.tb_config.ledger_id,
-                code: self.tb_config.provider_account_code(mapping.category),
+                ledger: self.ledger_config.ledger_id,
+                code: self.ledger_config.provider_account_code(mapping.category),
                 flags: AccountFlags::History.bits(),
                 timestamp: 0,
             };
 
-            let create_result = self.tb_client.create_account(expected.clone()).await;
+            let create_result = self.ledger_client.create_account(expected.clone()).await;
             if let Err(error) = &create_result {
                 tracing::warn!(
                     provider_id = %provider_id,
@@ -401,7 +405,7 @@ impl ProviderService {
                 );
             }
 
-            let accounts = self.tb_client.lookup_account(expected.id).await?;
+            let accounts = self.ledger_client.lookup_account(expected.id).await?;
             let account = accounts.first().ok_or(TigerBeetleError::ClientFailure {
                 operation: "verify_provider_account",
             })?;

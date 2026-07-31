@@ -24,7 +24,7 @@ use crate::{
             ProviderFeeProfile, ProviderFeeProfileStatus,
         },
     },
-    kafka::contract::{InternalEventEnvelope, InternalEventHeaders},
+    messaging::contract::{InternalEventEnvelope, InternalEventHeaders},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

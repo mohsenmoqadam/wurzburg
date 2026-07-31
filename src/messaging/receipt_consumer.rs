@@ -18,7 +18,7 @@ use crate::{
     db::oracle::OracleRepository,
     domain::card_policy::PolicyMaterializationReceipt,
     domain::provider_fee::ProviderFeeMaterializationReceipt,
-    kafka::{
+    messaging::{
         contract::{InternalEventEnvelope, RuntimeMaterializationReceipt},
         producer::apply_security_config,
     },

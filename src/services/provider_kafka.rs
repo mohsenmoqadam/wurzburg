@@ -18,7 +18,7 @@ use crate::{
         ProviderKafkaRetryDecision,
     },
     domain::audit::TrustedAuditContext,
-    kafka::{AppKafkaAdmin, KafkaAdminError, ProviderKafkaAccessSpec},
+    messaging::{KafkaAdminError, MessageBrokerAdmin, ProviderKafkaAccessSpec},
     security::provider_kafka_cipher::{CredentialCipherError, ProviderKafkaCredentialFactory},
 };
 
@@ -239,7 +239,7 @@ mod tests {
 #[derive(Clone)]
 pub struct ProviderKafkaService {
     repository: Arc<OracleRepository>,
-    admin: AppKafkaAdmin,
+    admin: MessageBrokerAdmin,
     credentials: Arc<ProviderKafkaCredentialFactory>,
     scram_iterations: i32,
 }
@@ -247,7 +247,7 @@ pub struct ProviderKafkaService {
 impl ProviderKafkaService {
     pub fn new(
         repository: Arc<OracleRepository>,
-        admin: AppKafkaAdmin,
+        admin: MessageBrokerAdmin,
         credentials: Arc<ProviderKafkaCredentialFactory>,
         scram_iterations: i32,
     ) -> Self {

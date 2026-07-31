@@ -1,23 +1,25 @@
-use crate::tigerbeetle::models::AppAccountBalance;
+use crate::ledger::models::LedgerAccountBalance;
 use tigerbeetle_rustclient_tests_snapshot::Account;
 use tokio::sync::oneshot;
 
 use super::error::TigerBeetleResult;
-use super::models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
+use super::models::{
+    LedgerAccount, LedgerCreateAccountsResult, LedgerCreateTransfersResult, LedgerTransfer,
+};
 
 /// Commands routed to the background worker for batch processing.
-pub enum TbCommand {
+pub enum LedgerCommand {
     CreateAccount {
-        account: AppAccount,
-        responder: oneshot::Sender<TigerBeetleResult<Vec<AppCreateAccountsResult>>>,
+        account: LedgerAccount,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<LedgerCreateAccountsResult>>>,
     },
     CreateTransfer {
-        transfer: AppTransfer,
-        responder: oneshot::Sender<TigerBeetleResult<Vec<AppCreateTransfersResult>>>,
+        transfer: LedgerTransfer,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<LedgerCreateTransfersResult>>>,
     },
     LookupAccount {
         id: u128,
-        responder: oneshot::Sender<TigerBeetleResult<Vec<AppAccount>>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<LedgerAccount>>>,
     },
     LookupAccounts {
         ids: Vec<u128>,
@@ -25,31 +27,31 @@ pub enum TbCommand {
     },
     LookupTransfer {
         id: u128,
-        responder: oneshot::Sender<TigerBeetleResult<Vec<AppTransfer>>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<LedgerTransfer>>>,
     },
     GetAccountBalances {
         ids: Vec<u128>,
-        responder: oneshot::Sender<TigerBeetleResult<Vec<AppAccountBalance>>>,
+        responder: oneshot::Sender<TigerBeetleResult<Vec<LedgerAccountBalance>>>,
     },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tigerbeetle::models::{AppAccount, AppTransfer};
+    use crate::ledger::models::{LedgerAccount, LedgerTransfer};
     use tokio::sync::{mpsc, oneshot};
 
     /// Tests the routing of a `CreateAccount` command.
     ///
-    /// This test ensures that a `TbCommand::CreateAccount` can be successfully sent
+    /// This test ensures that a `LedgerCommand::CreateAccount` can be successfully sent
     /// through an MPSC channel, received, and a response can be sent back via
     /// the oneshot channel provided in the command.
     #[tokio::test]
-    async fn test_tb_create_account_routing() {
-        let (tx, mut rx) = mpsc::channel::<TbCommand>(32);
+    async fn test_ledger_create_account_routing() {
+        let (tx, mut rx) = mpsc::channel::<LedgerCommand>(32);
         let (resp_tx, resp_rx) = oneshot::channel();
 
-        let account = AppAccount {
+        let account = LedgerAccount {
             id: 1,
             debits_pending: 0,
             debits_posted: 0,
@@ -67,7 +69,7 @@ mod tests {
 
         // Spawn a task to send the command
         tokio::spawn(async move {
-            tx.send(TbCommand::CreateAccount {
+            tx.send(LedgerCommand::CreateAccount {
                 account,
                 responder: resp_tx,
             })
@@ -76,7 +78,7 @@ mod tests {
         });
 
         // Receive the command and verify its contents
-        if let Some(TbCommand::CreateAccount {
+        if let Some(LedgerCommand::CreateAccount {
             account: received_acc,
             responder,
         }) = rx.recv().await
@@ -99,15 +101,15 @@ mod tests {
 
     /// Tests the routing of a `CreateTransfer` command.
     ///
-    /// This test verifies that a `TbCommand::CreateTransfer` is correctly sent
+    /// This test verifies that a `LedgerCommand::CreateTransfer` is correctly sent
     /// through the MPSC channel, received by the consumer, and that a response
     /// can be successfully returned.
     #[tokio::test]
-    async fn test_tb_create_transfer_routing() {
-        let (tx, mut rx) = mpsc::channel::<TbCommand>(32);
+    async fn test_ledger_create_transfer_routing() {
+        let (tx, mut rx) = mpsc::channel::<LedgerCommand>(32);
         let (resp_tx, resp_rx) = oneshot::channel();
 
-        let transfer = AppTransfer {
+        let transfer = LedgerTransfer {
             id: 1,
             debit_account_id: 2,
             credit_account_id: 3,
@@ -124,7 +126,7 @@ mod tests {
         };
 
         tokio::spawn(async move {
-            tx.send(TbCommand::CreateTransfer {
+            tx.send(LedgerCommand::CreateTransfer {
                 transfer,
                 responder: resp_tx,
             })
@@ -132,7 +134,7 @@ mod tests {
             .unwrap();
         });
 
-        if let Some(TbCommand::CreateTransfer {
+        if let Some(LedgerCommand::CreateTransfer {
             transfer: received_tf,
             responder,
         }) = rx.recv().await
@@ -153,15 +155,15 @@ mod tests {
 
     /// Tests the routing of a `LookupAccount` command.
     ///
-    /// This test ensures that a `TbCommand::LookupAccount` with a specific ID is
+    /// This test ensures that a `LedgerCommand::LookupAccount` with a specific ID is
     /// properly sent and received, and that a response can be returned.
     #[tokio::test]
-    async fn test_tb_lookup_account_routing() {
-        let (tx, mut rx) = mpsc::channel::<TbCommand>(32);
+    async fn test_ledger_lookup_account_routing() {
+        let (tx, mut rx) = mpsc::channel::<LedgerCommand>(32);
         let (resp_tx, resp_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            tx.send(TbCommand::LookupAccount {
+            tx.send(LedgerCommand::LookupAccount {
                 id: 100,
                 responder: resp_tx,
             })
@@ -169,7 +171,7 @@ mod tests {
             .unwrap();
         });
 
-        if let Some(TbCommand::LookupAccount { id, responder }) = rx.recv().await {
+        if let Some(LedgerCommand::LookupAccount { id, responder }) = rx.recv().await {
             assert_eq!(id, 100);
             let _ = responder.send(Ok(vec![]));
         } else {
@@ -186,15 +188,15 @@ mod tests {
 
     /// Tests the routing of a `LookupTransfer` command.
     ///
-    /// This test verifies that a `TbCommand::LookupTransfer` with a specific ID is
+    /// This test verifies that a `LedgerCommand::LookupTransfer` with a specific ID is
     /// correctly sent through the channel and a response is successfully received.
     #[tokio::test]
-    async fn test_tb_lookup_transfer_routing() {
-        let (tx, mut rx) = mpsc::channel::<TbCommand>(32);
+    async fn test_ledger_lookup_transfer_routing() {
+        let (tx, mut rx) = mpsc::channel::<LedgerCommand>(32);
         let (resp_tx, resp_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            tx.send(TbCommand::LookupTransfer {
+            tx.send(LedgerCommand::LookupTransfer {
                 id: 200,
                 responder: resp_tx,
             })
@@ -202,7 +204,7 @@ mod tests {
             .unwrap();
         });
 
-        if let Some(TbCommand::LookupTransfer { id, responder }) = rx.recv().await {
+        if let Some(LedgerCommand::LookupTransfer { id, responder }) = rx.recv().await {
             assert_eq!(id, 200);
             let _ = responder.send(Ok(vec![]));
         } else {

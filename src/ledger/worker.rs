@@ -5,21 +5,21 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
-use super::commands::TbCommand;
+use super::commands::LedgerCommand;
 use super::operations::{
     process_accounts, process_lookup_accounts, process_lookup_transfers, process_transfers,
 };
 use crate::config::Settings;
-use crate::tigerbeetle::TigerBeetleError;
-use crate::tigerbeetle::models::AppAccountBalance;
+use crate::ledger::TigerBeetleError;
+use crate::ledger::models::LedgerAccountBalance;
 
 #[derive(Clone)]
-pub struct TigerBeetleWorkerHandle {
+pub struct LedgerWorkerHandle {
     shutdown: watch::Sender<bool>,
     task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
-impl TigerBeetleWorkerHandle {
+impl LedgerWorkerHandle {
     pub async fn shutdown(&self) {
         let _ = self.shutdown.send(true);
         let task = self
@@ -34,25 +34,25 @@ impl TigerBeetleWorkerHandle {
 }
 
 /// Spawn the owned background worker that batches all TigerBeetle operations.
-pub fn start_tb_worker(
+pub fn start_ledger_worker(
     config: Arc<Settings>,
-    receiver: mpsc::Receiver<TbCommand>,
-) -> TigerBeetleWorkerHandle {
+    receiver: mpsc::Receiver<LedgerCommand>,
+) -> LedgerWorkerHandle {
     let (shutdown, shutdown_receiver) = watch::channel(false);
     let task = tokio::spawn(async move {
-        if let Err(error) = run_tb_worker(config, receiver, shutdown_receiver).await {
+        if let Err(error) = run_ledger_worker(config, receiver, shutdown_receiver).await {
             tracing::error!(error = ?error, "TigerBeetle worker failed");
         }
     });
-    TigerBeetleWorkerHandle {
+    LedgerWorkerHandle {
         shutdown,
         task: Arc::new(Mutex::new(Some(task))),
     }
 }
 
-async fn run_tb_worker(
+async fn run_ledger_worker(
     config: Arc<Settings>,
-    mut receiver: mpsc::Receiver<TbCommand>,
+    mut receiver: mpsc::Receiver<LedgerCommand>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     let addresses = config.tigerbeetle.replica_addresses.join(",");
@@ -92,28 +92,28 @@ async fn run_tb_worker(
                 }
                 cmd = receiver.recv() => {
                     match cmd {
-                        Some(TbCommand::CreateTransfer { transfer, responder }) => {
+                        Some(LedgerCommand::CreateTransfer { transfer, responder }) => {
                             transfer_batch.push(transfer);
                             transfer_responders.push(responder);
                             if transfer_batch.len() >= batch_max_size {
                                 process_transfers(&client, &mut transfer_batch, &mut transfer_responders).await;
                             }
                         }
-                        Some(TbCommand::CreateAccount { account, responder }) => {
+                        Some(LedgerCommand::CreateAccount { account, responder }) => {
                             account_batch.push(account);
                             account_responders.push(responder);
                             if account_batch.len() >= batch_max_size {
                                 process_accounts(&client, &mut account_batch, &mut account_responders).await;
                             }
                         }
-                        Some(TbCommand::LookupAccount { id, responder }) => {
+                        Some(LedgerCommand::LookupAccount { id, responder }) => {
                             lookup_acc_batch.push(id);
                             lookup_acc_responders.push(responder);
                             if lookup_acc_batch.len() >= batch_max_size {
                                 process_lookup_accounts(&client, &mut lookup_acc_batch, &mut lookup_acc_responders).await;
                             }
                         }
-                        Some(TbCommand::LookupAccounts { ids, response }) => {
+                        Some(LedgerCommand::LookupAccounts { ids, response }) => {
                             let result = client
                                 .lookup_accounts(&ids)
                                 .await
@@ -121,18 +121,18 @@ async fn run_tb_worker(
 
                             let _ = response.send(result);
                         }
-                        Some(TbCommand::LookupTransfer { id, responder }) => {
+                        Some(LedgerCommand::LookupTransfer { id, responder }) => {
                             lookup_tx_batch.push(id);
                             lookup_tx_responders.push(responder);
                             if lookup_tx_batch.len() >= batch_max_size {
                                 process_lookup_transfers(&client, &mut lookup_tx_batch, &mut lookup_tx_responders).await;
                             }
                         }
-                        Some(TbCommand::GetAccountBalances { ids, responder }) => {
+                        Some(LedgerCommand::GetAccountBalances { ids, responder }) => {
                             let result = match client.lookup_accounts(&ids).await {
                                 Ok(accounts) => {
                                     let balances = accounts.into_iter().map(|acc| {
-                                        AppAccountBalance {
+                                        LedgerAccountBalance {
                                             account_id: acc.id,
                                             posted_balance: (acc.credits_posted as i128) - (acc.debits_posted as i128),
                                             pending_balance: (acc.credits_pending as i128) - (acc.debits_pending as i128),

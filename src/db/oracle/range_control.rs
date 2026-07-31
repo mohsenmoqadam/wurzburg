@@ -11,7 +11,7 @@ use crate::{
         },
     },
     domain::audit::{AuditAction, NewAuditLog, TrustedAuditContext},
-    kafka::contract::RuntimeMaterializationReceipt,
+    messaging::contract::RuntimeMaterializationReceipt,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

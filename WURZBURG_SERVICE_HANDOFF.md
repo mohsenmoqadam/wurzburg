@@ -214,8 +214,8 @@ boundaries:
 src/config/           configuration schema, loading, validation, runtime identity
 src/state/            application dependency container and process bootstrap
 src/object_storage/   MinIO client, bootstrap, models, key/size/checksum validation
-src/kafka/            Kafka contracts, clients, relay, receipts, and administration
-src/tigerbeetle/      TigerBeetle client, commands, mapping, and worker
+src/messaging/        event contracts, Kafka producer/admin, relay, and receipts
+src/ledger/           ledger models/commands and the TigerBeetle client/worker
 src/db/oracle/        Oracle persistence, transactions, migrations, and row mapping
 ```
 
@@ -225,6 +225,13 @@ object-key validation must not leak into handlers or application services.
 `AppState` is a dependency container rather than an infrastructure provisioning
 mechanism: normal server replicas construct clients and verify readiness, while
 explicit deployment init jobs create buckets, Kafka resources, and schema.
+
+Module names describe Wurzburg capabilities, while implementation-specific
+names remain explicit at infrastructure and diagnostic boundaries. Therefore
+application code uses `LedgerClient`, `MessageProducer`, and
+`MessageBrokerAdmin`; configuration retains `TigerBeetleConfig` and
+`KafkaConfig`; provider SCRAM/ACL APIs retain Kafka terminology; and telemetry
+continues to report the concrete `tigerbeetle` and `kafka` systems.
 
 ### Migration Policy
 

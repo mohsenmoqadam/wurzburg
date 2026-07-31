@@ -20,7 +20,7 @@ use crate::{
         idempotency::IdempotencyStatus,
         provider::{Provider, ProviderStatus},
     },
-    kafka::contract::InternalEventHeaders,
+    messaging::contract::InternalEventHeaders,
 };
 
 #[derive(Debug, Clone, PartialEq)]

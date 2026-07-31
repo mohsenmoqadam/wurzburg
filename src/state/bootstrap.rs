@@ -6,10 +6,10 @@ use crate::config::Settings;
 use crate::db::oracle::{
     OracleConnectConfig, OracleHealthRepository, OraclePool, OracleRepository,
 };
-use crate::kafka::{AppKafkaAdmin, AppKafkaProducer};
+use crate::ledger::{LedgerClient, start_ledger_worker};
+use crate::messaging::{MessageBrokerAdmin, MessageProducer};
 use crate::object_storage::ObjectStorage;
 use crate::security::provider_kafka_cipher::ProviderKafkaCredentialFactory;
-use crate::tigerbeetle::{AppTbClient, start_tb_worker};
 
 use super::AppState;
 
@@ -33,8 +33,8 @@ impl AppState {
             .create_pool(Some(Runtime::Tokio1))
             .context("Failed to create Redis pool")?;
 
-        let kafka_producer = AppKafkaProducer::new(&config.kafka)?;
-        let kafka_admin = AppKafkaAdmin::new(&config.kafka)?;
+        let message_producer = MessageProducer::new(&config.kafka)?;
+        let message_broker_admin = MessageBrokerAdmin::new(&config.kafka)?;
         let provider_kafka_credentials = config
             .provider_kafka_access
             .enabled
@@ -53,8 +53,8 @@ impl AppState {
             })?
             .map(Arc::new);
 
-        let (tb_client, tb_receiver) = AppTbClient::new(&config)?;
-        let tb_worker = start_tb_worker(config_arc.clone(), tb_receiver);
+        let (ledger_client, ledger_receiver) = LedgerClient::new(&config)?;
+        let ledger_worker = start_ledger_worker(config_arc.clone(), ledger_receiver);
         let object_storage = Arc::new(ObjectStorage::new(&config.object_storage)?);
 
         Ok(Self {
@@ -62,10 +62,10 @@ impl AppState {
             db,
             oracle_health: Some(oracle_health),
             redis,
-            kafka_producer,
-            kafka_admin,
-            tb_client,
-            tb_worker,
+            message_producer,
+            message_broker_admin,
+            ledger_client,
+            ledger_worker,
             provider_kafka_credentials,
             object_storage,
         })

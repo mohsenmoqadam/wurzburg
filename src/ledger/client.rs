@@ -1,22 +1,24 @@
-use super::commands::TbCommand;
+use super::commands::LedgerCommand;
 use super::error::{TigerBeetleError, TigerBeetleResult};
-use super::models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
+use super::models::{
+    LedgerAccount, LedgerCreateAccountsResult, LedgerCreateTransfersResult, LedgerTransfer,
+};
 use crate::config::Settings;
-use crate::tigerbeetle::models::AppAccountBalance;
+use crate::ledger::models::LedgerAccountBalance;
 use anyhow::Result;
 use tigerbeetle_rustclient_tests_snapshot::Account;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 #[derive(Clone)]
-pub struct AppTbClient {
-    sender: mpsc::Sender<TbCommand>,
+pub struct LedgerClient {
+    sender: mpsc::Sender<LedgerCommand>,
     operation_timeout: std::time::Duration,
 }
 
-impl AppTbClient {
+impl LedgerClient {
     /// Initializes the MPSC channel for batching commands to the background worker.
-    pub fn new(config: &Settings) -> Result<(Self, mpsc::Receiver<TbCommand>)> {
+    pub fn new(config: &Settings) -> Result<(Self, mpsc::Receiver<LedgerCommand>)> {
         let (sender, receiver) = mpsc::channel(config.tigerbeetle.channel_capacity);
         Ok((
             Self {
@@ -31,10 +33,10 @@ impl AppTbClient {
     #[tracing::instrument(skip(self))]
     pub async fn create_transfer(
         &self,
-        transfer: AppTransfer,
-    ) -> TigerBeetleResult<Vec<AppCreateTransfersResult>> {
+        transfer: LedgerTransfer,
+    ) -> TigerBeetleResult<Vec<LedgerCreateTransfersResult>> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TbCommand::CreateTransfer {
+        self.send(LedgerCommand::CreateTransfer {
             transfer,
             responder: resp_tx,
         })
@@ -46,10 +48,10 @@ impl AppTbClient {
     #[tracing::instrument(skip(self))]
     pub async fn create_account(
         &self,
-        account: AppAccount,
-    ) -> TigerBeetleResult<Vec<AppCreateAccountsResult>> {
+        account: LedgerAccount,
+    ) -> TigerBeetleResult<Vec<LedgerCreateAccountsResult>> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TbCommand::CreateAccount {
+        self.send(LedgerCommand::CreateAccount {
             account,
             responder: resp_tx,
         })
@@ -59,9 +61,9 @@ impl AppTbClient {
 
     /// Looks up a single account by ID (batched internally) and awaits its data.
     #[tracing::instrument(skip(self))]
-    pub async fn lookup_account(&self, id: u128) -> TigerBeetleResult<Vec<AppAccount>> {
+    pub async fn lookup_account(&self, id: u128) -> TigerBeetleResult<Vec<LedgerAccount>> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TbCommand::LookupAccount {
+        self.send(LedgerCommand::LookupAccount {
             id,
             responder: resp_tx,
         })
@@ -74,16 +76,16 @@ impl AppTbClient {
     pub async fn lookup_accounts(&self, ids: Vec<u128>) -> TigerBeetleResult<Vec<Account>> {
         let (tx, rx) = oneshot::channel();
 
-        self.send(TbCommand::LookupAccounts { ids, response: tx })
+        self.send(LedgerCommand::LookupAccounts { ids, response: tx })
             .await?;
         self.receive(rx).await
     }
 
     /// Looks up a single transfer by ID (batched internally) and awaits its data.
     #[tracing::instrument(skip(self))]
-    pub async fn lookup_transfer(&self, id: u128) -> TigerBeetleResult<Vec<AppTransfer>> {
+    pub async fn lookup_transfer(&self, id: u128) -> TigerBeetleResult<Vec<LedgerTransfer>> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.send(TbCommand::LookupTransfer {
+        self.send(LedgerCommand::LookupTransfer {
             id,
             responder: resp_tx,
         })
@@ -95,15 +97,15 @@ impl AppTbClient {
     pub async fn get_account_balances(
         &self,
         ids: Vec<u128>,
-    ) -> TigerBeetleResult<Vec<AppAccountBalance>> {
+    ) -> TigerBeetleResult<Vec<LedgerAccountBalance>> {
         let (tx, rx) = oneshot::channel();
 
-        self.send(TbCommand::GetAccountBalances { ids, responder: tx })
+        self.send(LedgerCommand::GetAccountBalances { ids, responder: tx })
             .await?;
         self.receive(rx).await
     }
 
-    async fn send(&self, command: TbCommand) -> TigerBeetleResult<()> {
+    async fn send(&self, command: LedgerCommand) -> TigerBeetleResult<()> {
         timeout(self.operation_timeout, self.sender.send(command))
             .await
             .map_err(|_| TigerBeetleError::QueueUnavailable)?

@@ -3,9 +3,11 @@ use tigerbeetle_rustclient_tests_snapshot::{
     Transfer as TbTransfer, TransferFlags,
 };
 
-use super::models::{AppAccount, AppCreateAccountsResult, AppCreateTransfersResult, AppTransfer};
+use super::models::{
+    LedgerAccount, LedgerCreateAccountsResult, LedgerCreateTransfersResult, LedgerTransfer,
+};
 
-pub fn to_tb_account(app: &AppAccount) -> TbAccount {
+pub fn to_tb_account(app: &LedgerAccount) -> TbAccount {
     TbAccount {
         id: app.id,
         debits_pending: app.debits_pending,
@@ -23,7 +25,7 @@ pub fn to_tb_account(app: &AppAccount) -> TbAccount {
     }
 }
 
-pub fn to_tb_transfer(app: &AppTransfer) -> TbTransfer {
+pub fn to_tb_transfer(app: &LedgerTransfer) -> TbTransfer {
     TbTransfer {
         id: app.id,
         debit_account_id: app.debit_account_id,
@@ -41,8 +43,8 @@ pub fn to_tb_transfer(app: &AppTransfer) -> TbTransfer {
     }
 }
 
-pub fn from_tb_account(tb: &TbAccount) -> AppAccount {
-    AppAccount {
+pub fn from_tb_account(tb: &TbAccount) -> LedgerAccount {
+    LedgerAccount {
         id: tb.id,
         debits_pending: tb.debits_pending,
         debits_posted: tb.debits_posted,
@@ -59,8 +61,8 @@ pub fn from_tb_account(tb: &TbAccount) -> AppAccount {
     }
 }
 
-pub fn from_tb_transfer(tb: &TbTransfer) -> AppTransfer {
-    AppTransfer {
+pub fn from_tb_transfer(tb: &TbTransfer) -> LedgerTransfer {
+    LedgerTransfer {
         id: tb.id,
         debit_account_id: tb.debit_account_id,
         credit_account_id: tb.credit_account_id,
@@ -77,15 +79,15 @@ pub fn from_tb_transfer(tb: &TbTransfer) -> AppTransfer {
     }
 }
 
-pub fn from_tb_account_result(tb: &CreateAccountsResult) -> AppCreateAccountsResult {
-    AppCreateAccountsResult {
+pub fn from_tb_account_result(tb: &CreateAccountsResult) -> LedgerCreateAccountsResult {
+    LedgerCreateAccountsResult {
         index: tb.index as u32,
         result: tb.result as u32,
     }
 }
 
-pub fn from_tb_transfer_result(tb: &CreateTransfersResult) -> AppCreateTransfersResult {
-    AppCreateTransfersResult {
+pub fn from_tb_transfer_result(tb: &CreateTransfersResult) -> LedgerCreateTransfersResult {
+    LedgerCreateTransfersResult {
         index: tb.index as u32,
         result: tb.result as u32,
     }

@@ -6,7 +6,7 @@ use wurzburg::{
     api::{router::build_app_router, swagger::swagger_router},
     config::Settings,
     db::oracle::verify_oracle_schema,
-    kafka::{outbox_relay::start_outbox_relay, receipt_consumer::start_receipt_consumer},
+    messaging::{outbox_relay::start_outbox_relay, receipt_consumer::start_receipt_consumer},
     services::{
         provider::ProviderService,
         provider_kafka::{ProviderKafkaService, start_provider_kafka_provisioning_worker},
@@ -33,10 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Initialize dependency clients (Oracle, Dragonfly, Kafka, TigerBeetle, MinIO).
     let app_state = Arc::new(AppState::new(settings.clone()).await?);
-    let tb_worker = app_state.tb_worker.clone();
+    let ledger_worker = app_state.ledger_worker.clone();
     let outbox_relay = start_outbox_relay(
         app_state.db.clone(),
-        app_state.kafka_producer.clone(),
+        app_state.message_producer.clone(),
         settings.kafka.outbox_relay.clone(),
     );
     let receipt_consumer = start_receipt_consumer(app_state.db.clone(), settings.kafka.clone())?;
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_state.db.clone(),
         ProviderService::new(
             app_state.db.clone(),
-            app_state.tb_client.clone(),
+            app_state.ledger_client.clone(),
             settings.tigerbeetle.clone(),
             app_state.provider_kafka_credentials.clone(),
         ),
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_state.db.clone(),
             ProviderKafkaService::new(
                 app_state.db.clone(),
-                app_state.kafka_admin.clone(),
+                app_state.message_broker_admin.clone(),
                 credentials,
                 settings.provider_kafka_access.scram_iterations,
             ),
@@ -158,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 handle.shutdown().await;
             }
         };
-        let tigerbeetle_shutdown = tb_worker.shutdown();
+        let ledger_shutdown = ledger_worker.shutdown();
         let (swagger_result, (), (), (), (), (), ()) = tokio::join!(
             swagger_result,
             outbox_shutdown,
@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             core_shutdown,
             kafka_shutdown,
             operational_profile_shutdown,
-            tigerbeetle_shutdown
+            ledger_shutdown
         );
         swagger_result
     };

@@ -15,7 +15,7 @@ use wurzburg::{
     domain::{
         card_policy::PolicyMaterializationReceipt, provider_fee::ProviderFeeMaterializationReceipt,
     },
-    kafka::contract::RuntimeMaterializationReceipt,
+    messaging::contract::RuntimeMaterializationReceipt,
     object_storage::initialize_bucket,
     state::AppState,
 };
@@ -44,7 +44,7 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
             .expect("Wurzburg state should start"),
     );
     let repository = state.db.clone();
-    let tb_client = state.tb_client.clone();
+    let ledger_client = state.ledger_client.clone();
     let app = build_app_router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -402,7 +402,11 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     let usage = wurzburg::domain::user_card::PolicyUsageAccountIds::for_card(card_id);
     for id in usage.ordered() {
         assert_eq!(
-            tb_client.lookup_account(id.as_u128()).await.unwrap().len(),
+            ledger_client
+                .lookup_account(id.as_u128())
+                .await
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -422,7 +426,7 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     let provider_user: serde_json::Value = serde_json::from_str(&provider_user_body).unwrap();
     assert_eq!(provider_user["status"], "ACTIVE");
     let provider_user_account_id = value_uuid(&provider_user, "provider_user_account_id");
-    let provider_user_accounts = tb_client
+    let provider_user_accounts = ledger_client
         .lookup_account(provider_user_account_id.as_u128())
         .await
         .expect("provider-user TigerBeetle lookup should succeed");
@@ -452,7 +456,7 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
         .expect("provider mappings should load");
     assert_eq!(mappings.len(), 4);
     for mapping in mappings {
-        let accounts = tb_client
+        let accounts = ledger_client
             .lookup_account(mapping.tigerbeetle_account_id.as_u128())
             .await
             .expect("TigerBeetle account lookup should succeed");

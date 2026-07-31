@@ -1,6 +1,6 @@
 /// Independent domain model for an Account.
 #[derive(Debug, Clone)]
-pub struct AppAccount {
+pub struct LedgerAccount {
     pub id: u128,
     pub debits_pending: u128,
     pub debits_posted: u128,
@@ -18,7 +18,7 @@ pub struct AppAccount {
 
 /// Independent domain model for a Transfer.
 #[derive(Debug, Clone)]
-pub struct AppTransfer {
+pub struct LedgerTransfer {
     pub id: u128,
     pub debit_account_id: u128,
     pub credit_account_id: u128,
@@ -35,19 +35,19 @@ pub struct AppTransfer {
 }
 
 #[derive(Debug, Clone)]
-pub struct AppCreateAccountsResult {
+pub struct LedgerCreateAccountsResult {
     pub index: u32,
     pub result: u32,
 }
 
 #[derive(Debug, Clone)]
-pub struct AppCreateTransfersResult {
+pub struct LedgerCreateTransfersResult {
     pub index: u32,
     pub result: u32,
 }
 
 #[derive(Debug, Clone)]
-pub struct AppAccountBalance {
+pub struct LedgerAccountBalance {
     pub account_id: u128,
     pub posted_balance: i128,
     pub pending_balance: i128,

@@ -383,7 +383,7 @@ pub async fn create_provider(
     };
     let service = ProviderService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
         state.provider_kafka_credentials.clone(),
     );
@@ -414,7 +414,7 @@ pub async fn get_provider(
     let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
     let service = ProviderService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
         state.provider_kafka_credentials.clone(),
     );
@@ -468,7 +468,7 @@ pub async fn list_providers(
         .transpose()?;
     let service = ProviderService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
         state.provider_kafka_credentials.clone(),
     );
@@ -520,7 +520,7 @@ pub async fn get_provider_ledger(
     let actor = extract_trusted_actor(&request_context, &state.config.wso2)?;
     let service = ProviderService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
         state.provider_kafka_credentials.clone(),
     );
@@ -564,7 +564,7 @@ pub async fn get_provider_kafka_credentials(
         .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderKafkaAccessNotFound))?;
     let service = ProviderKafkaService::new(
         state.db.clone(),
-        state.kafka_admin.clone(),
+        state.message_broker_admin.clone(),
         credentials,
         state.config.provider_kafka_access.scram_iterations,
     );
@@ -609,7 +609,7 @@ pub async fn get_provider_kafka_status(
         .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderKafkaAccessNotFound))?;
     let service = ProviderKafkaService::new(
         state.db.clone(),
-        state.kafka_admin.clone(),
+        state.message_broker_admin.clone(),
         credentials,
         state.config.provider_kafka_access.scram_iterations,
     );
@@ -747,7 +747,7 @@ async fn command_provider_kafka(
         .ok_or_else(|| ApiError::new(WurzburgResultCode::ProviderKafkaAccessNotFound))?;
     let service = ProviderKafkaService::new(
         state.db.clone(),
-        state.kafka_admin.clone(),
+        state.message_broker_admin.clone(),
         credentials,
         state.config.provider_kafka_access.scram_iterations,
     );
@@ -790,7 +790,7 @@ pub async fn assign_provider_card_range(
     };
     let service = ProviderService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
         state.provider_kafka_credentials.clone(),
     );
@@ -913,7 +913,7 @@ async fn transition_provider(
     };
     let service = ProviderService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
         state.provider_kafka_credentials.clone(),
     );

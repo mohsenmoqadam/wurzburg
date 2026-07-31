@@ -259,7 +259,7 @@ pub async fn upload_card_issuance_result_file(
     );
     let provider_user_service = crate::services::provider_user::ProviderUserService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
     );
     match issuance_service

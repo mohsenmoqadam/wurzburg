@@ -10,7 +10,7 @@ use rdkafka::{
 use crate::config::KafkaConfig;
 
 use super::{
-    native_admin::{self, AclOperation, AclResource, KafkaAdminError, ProviderAcl},
+    native_kafka_admin::{self, AclOperation, AclResource, KafkaAdminError, ProviderAcl},
     producer::apply_security_config,
 };
 
@@ -25,14 +25,14 @@ pub struct ProviderKafkaAccessSpec {
 /// Provider SCRAM and ACL provisioning belongs to the later Provider worker and
 /// is intentionally absent until its security and recovery contract is built.
 #[derive(Clone)]
-pub struct AppKafkaAdmin {
+pub struct MessageBrokerAdmin {
     client: std::sync::Arc<AdminClient<DefaultClientContext>>,
     request_timeout: std::time::Duration,
     partitions: i32,
     replication_factor: i32,
 }
 
-impl AppKafkaAdmin {
+impl MessageBrokerAdmin {
     pub fn new(config: &KafkaConfig) -> Result<Self> {
         config.validate()?;
         let mut client_config = ClientConfig::new();
@@ -160,7 +160,7 @@ impl AppKafkaAdmin {
         let client = self.client.clone();
         let timeout = self.request_timeout;
         tokio::task::spawn_blocking(move || {
-            let result = native_admin::upsert_scram_sha512(
+            let result = native_kafka_admin::upsert_scram_sha512(
                 client.as_ref(),
                 &spec.username,
                 &password,
@@ -169,8 +169,8 @@ impl AppKafkaAdmin {
             )
             .and_then(|()| {
                 for acl in provider_acls(&spec) {
-                    if !native_admin::acl_exists(client.as_ref(), acl, timeout)? {
-                        native_admin::create_acl(client.as_ref(), acl, timeout)?;
+                    if !native_kafka_admin::acl_exists(client.as_ref(), acl, timeout)? {
+                        native_kafka_admin::create_acl(client.as_ref(), acl, timeout)?;
                     }
                 }
                 verify_provider_access_native(client.as_ref(), &spec, timeout)
@@ -221,12 +221,12 @@ impl AppKafkaAdmin {
         let timeout = self.request_timeout;
         tokio::task::spawn_blocking(move || {
             for acl in provider_acls(&spec) {
-                if native_admin::acl_exists(client.as_ref(), acl, timeout)? {
-                    native_admin::delete_acl(client.as_ref(), acl, timeout)?;
+                if native_kafka_admin::acl_exists(client.as_ref(), acl, timeout)? {
+                    native_kafka_admin::delete_acl(client.as_ref(), acl, timeout)?;
                 }
             }
-            if native_admin::verify_scram_sha512(client.as_ref(), &spec.username, timeout)? {
-                native_admin::delete_scram_sha512(client.as_ref(), &spec.username, timeout)?;
+            if native_kafka_admin::verify_scram_sha512(client.as_ref(), &spec.username, timeout)? {
+                native_kafka_admin::delete_scram_sha512(client.as_ref(), &spec.username, timeout)?;
             }
             Ok(())
         })
@@ -240,11 +240,11 @@ fn verify_provider_access_native(
     spec: &ProviderKafkaAccessSpec,
     timeout: std::time::Duration,
 ) -> std::result::Result<(), KafkaAdminError> {
-    if !native_admin::verify_scram_sha512(client, &spec.username, timeout)? {
+    if !native_kafka_admin::verify_scram_sha512(client, &spec.username, timeout)? {
         return Err(KafkaAdminError::NativeContract("scram_verification"));
     }
     for acl in provider_acls(spec) {
-        if !native_admin::acl_exists(client, acl, timeout)? {
+        if !native_kafka_admin::acl_exists(client, acl, timeout)? {
             return Err(KafkaAdminError::NativeContract("acl_verification"));
         }
     }

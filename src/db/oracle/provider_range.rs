@@ -21,7 +21,7 @@ use crate::{
         card_range::{FundingMode, WithdrawalLimitAuthority},
         idempotency::IdempotencyStatus,
     },
-    kafka::contract::{InternalEventEnvelope, InternalEventHeaders},
+    messaging::contract::{InternalEventEnvelope, InternalEventHeaders},
 };
 
 #[derive(Debug, Clone, PartialEq)]

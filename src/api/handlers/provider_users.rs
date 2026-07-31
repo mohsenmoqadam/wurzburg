@@ -212,7 +212,7 @@ pub async fn enroll_provider_user(
     };
     let service = ProviderUserService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
     );
     match service.enroll(&context, provider_id, enrollment).await? {
@@ -244,7 +244,7 @@ pub async fn list_user_cards(
     let actor = extract_trusted_actor(&request, &state.config.wso2)?;
     let values = ProviderUserService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
     )
     .list_user_cards(&actor, user_id)
@@ -274,7 +274,7 @@ pub async fn list_user_providers(
     let actor = extract_trusted_actor(&request, &state.config.wso2)?;
     let values = ProviderUserService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
     )
     .list_user_providers(&actor, user_id)
@@ -318,7 +318,7 @@ pub async fn list_provider_users(
     };
     let page = ProviderUserService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
     )
     .list(
@@ -360,7 +360,7 @@ pub async fn get_provider_user(
     let actor = extract_trusted_actor(&request, &state.config.wso2)?;
     let value = ProviderUserService::new(
         state.db.clone(),
-        state.tb_client.clone(),
+        state.ledger_client.clone(),
         state.config.tigerbeetle.clone(),
     )
     .get(&actor, provider_id, user_id)

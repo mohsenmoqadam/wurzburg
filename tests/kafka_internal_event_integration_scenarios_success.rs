@@ -8,8 +8,8 @@ use rdkafka::{
 use uuid::Uuid;
 use wurzburg::{
     config::Settings,
-    kafka::{
-        AppKafkaAdmin, AppKafkaProducer,
+    messaging::{
+        MessageBrokerAdmin, MessageProducer,
         contract::{InternalEventEnvelope, InternalEventHeaders},
     },
 };
@@ -39,7 +39,7 @@ async fn publishes_typed_internal_event_through_real_kafka() {
         settings.kafka.outbox_relay.topic.clone()
     };
     let admin = round_trip
-        .then(|| AppKafkaAdmin::new(&settings.kafka).expect("Kafka admin should initialize"));
+        .then(|| MessageBrokerAdmin::new(&settings.kafka).expect("Kafka admin should initialize"));
     if let Some(admin) = &admin {
         admin
             .create_topic(&topic)
@@ -65,7 +65,7 @@ async fn publishes_typed_internal_event_through_real_kafka() {
         traceparent: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string()),
         tracestate: Some("vendor=value".to_string()),
     };
-    AppKafkaProducer::new(&settings.kafka)
+    MessageProducer::new(&settings.kafka)
         .expect("producer should initialize")
         .send_internal(&topic, &aggregate_id.to_string(), &envelope, &headers)
         .await

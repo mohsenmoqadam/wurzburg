@@ -12,7 +12,7 @@ use wurzburg::{
     api::router::build_app_router,
     config::Settings,
     db::oracle::prepare_oracle_schema,
-    kafka::ProviderKafkaAccessSpec,
+    messaging::ProviderKafkaAccessSpec,
     services::provider_kafka::{ProviderKafkaService, start_provider_kafka_provisioning_worker},
     state::AppState,
 };
@@ -48,7 +48,7 @@ async fn provisions_rotates_suspends_and_resumes_real_provider_kafka_access() {
         state.db.clone(),
         ProviderKafkaService::new(
             state.db.clone(),
-            state.kafka_admin.clone(),
+            state.message_broker_admin.clone(),
             state
                 .provider_kafka_credentials
                 .clone()
@@ -155,12 +155,12 @@ async fn provisions_rotates_suspends_and_resumes_real_provider_kafka_access() {
         consumer_group: resumed["consumer_group"].as_str().unwrap().to_string(),
     };
     state
-        .kafka_admin
+        .message_broker_admin
         .revoke_provider_access(spec.clone())
         .await
         .expect("test cleanup should revoke Provider Kafka access");
     state
-        .kafka_admin
+        .message_broker_admin
         .delete_topic(&spec.topic_name)
         .await
         .expect("test cleanup should delete the isolated provider topic");

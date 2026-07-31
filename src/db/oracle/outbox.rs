@@ -7,7 +7,7 @@ use crate::{
         error::{DbError, DbResult},
         oracle::{OracleRepository, types::raw16_to_uuid},
     },
-    kafka::contract::{InternalEventEnvelope, InternalEventHeaders},
+    messaging::contract::{InternalEventEnvelope, InternalEventHeaders},
 };
 
 #[derive(Debug, Clone)]

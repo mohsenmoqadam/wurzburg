@@ -9,7 +9,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{config::KafkaOutboxRelayConfig, db::oracle::OracleRepository};
 
-use super::AppKafkaProducer;
+use super::MessageProducer;
 
 pub struct OutboxRelayHandle {
     shutdown: watch::Sender<bool>,
@@ -25,7 +25,7 @@ impl OutboxRelayHandle {
 
 pub fn start_outbox_relay(
     repository: Arc<OracleRepository>,
-    producer: AppKafkaProducer,
+    producer: MessageProducer,
     config: KafkaOutboxRelayConfig,
 ) -> Option<OutboxRelayHandle> {
     if !config.enabled {
@@ -39,7 +39,7 @@ pub fn start_outbox_relay(
 
 async fn run_outbox_relay(
     repository: Arc<OracleRepository>,
-    producer: AppKafkaProducer,
+    producer: MessageProducer,
     config: KafkaOutboxRelayConfig,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -93,7 +93,7 @@ async fn run_outbox_relay(
 
 async fn publish_claimed_event(
     repository: Arc<OracleRepository>,
-    producer: AppKafkaProducer,
+    producer: MessageProducer,
     config: &KafkaOutboxRelayConfig,
     event: crate::db::oracle::ClaimedOutboxEvent,
 ) {
@@ -167,7 +167,7 @@ fn retry_backoff(config: &KafkaOutboxRelayConfig, attempt: u32) -> Duration {
 
 fn link_original_trace(
     span: &tracing::Span,
-    headers: &crate::kafka::contract::InternalEventHeaders,
+    headers: &crate::messaging::contract::InternalEventHeaders,
 ) {
     let Some(traceparent) = headers.traceparent.as_deref() else {
         return;

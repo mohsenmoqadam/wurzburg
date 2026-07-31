@@ -3,7 +3,7 @@ use deadpool_redis::{Config as RedisConfig, Runtime};
 use wurzburg::{
     config::{MigrationConfig, Settings},
     db::oracle::{prepare_oracle_schema, verify_oracle_schema},
-    kafka::AppKafkaAdmin,
+    messaging::MessageBrokerAdmin,
     object_storage::{ObjectStorage, initialize_bucket},
     telemetry,
 };
@@ -91,7 +91,7 @@ async fn verify_database(settings: &Settings) -> Result<()> {
 }
 
 fn verify_kafka(settings: &Settings) -> Result<()> {
-    let admin = AppKafkaAdmin::new(&settings.kafka)?;
+    let admin = MessageBrokerAdmin::new(&settings.kafka)?;
     admin.verify_topics([
         settings.kafka.outbox_relay.topic.as_str(),
         settings.kafka.materialization_receipts.topic.as_str(),

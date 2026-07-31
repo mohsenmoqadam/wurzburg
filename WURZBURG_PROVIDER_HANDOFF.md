@@ -2897,7 +2897,23 @@ src/object_storage/client.rs
 src/object_storage/bootstrap.rs
 src/object_storage/model.rs
 src/object_storage/validation.rs
+
+src/ledger/client.rs
+src/ledger/commands.rs
+src/ledger/models.rs
+src/ledger/worker.rs
+
+src/messaging/contract.rs
+src/messaging/producer.rs
+src/messaging/kafka_admin.rs
+src/messaging/outbox_relay.rs
+src/messaging/receipt_consumer.rs
 ```
+
+`ledger` and `messaging` are application capability boundaries. Concrete
+TigerBeetle and Kafka terminology remains in configuration, adapter internals,
+provider Kafka access, and telemetry so operational diagnostics never hide the
+actual dependency.
 
 Credit movement and recovery modules are added when that slice is implemented;
 their names are not predeclared as if production code already existed. Handler-

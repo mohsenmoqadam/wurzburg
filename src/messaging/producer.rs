@@ -10,16 +10,16 @@ use std::time::Duration;
 
 use crate::{
     config::KafkaConfig,
-    kafka::contract::{InternalEventEnvelope, InternalEventHeaders},
+    messaging::contract::{InternalEventEnvelope, InternalEventHeaders},
 };
 
 #[derive(Clone)]
-pub struct AppKafkaProducer {
+pub struct MessageProducer {
     producer: FutureProducer,
     delivery_timeout: Duration,
 }
 
-impl AppKafkaProducer {
+impl MessageProducer {
     pub fn new(config: &KafkaConfig) -> Result<Self> {
         config.validate()?;
         let producer_config = &config.producer;

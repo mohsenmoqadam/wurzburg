@@ -20,7 +20,7 @@ use crate::{
         idempotency::IdempotencyStatus,
         user_card::{PolicyUsageAccountIds, deterministic_provider_user_account_id},
     },
-    kafka::contract::InternalEventHeaders,
+    messaging::contract::InternalEventHeaders,
 };
 
 #[derive(Debug, Clone)]
