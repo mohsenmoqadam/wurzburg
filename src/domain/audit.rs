@@ -1,9 +1,10 @@
 use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedAuditContext {
     pub actor_subject: String,
     pub actor_client_id: Option<String>,

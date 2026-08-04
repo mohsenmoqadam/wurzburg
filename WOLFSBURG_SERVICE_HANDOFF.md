@@ -197,11 +197,12 @@ currently materialized version. Equal versions are idempotent replays.
 
 Wurzburg and Nuremberg events may request `CP:{card_number}` refresh. Wolfsburg
 must not query the Wurzburg Oracle schema. A Wurzburg
-`CARD_PROFILE_PUBLISH_REQUESTED` command carries the complete, balance-free
+`CARD_PROFILE_REFRESH_REQUESTED` command carries the complete, balance-free
 canonical relationship/account snapshot required for the requested card state:
 
 ```text
 card_id, user_id, card_range_id, funding_mode, state_version
+runtime_action: UPSERT | DELETE
 all eight policy_usage_accounts
 funding_sources[] ordered by priority:
   provider_id
@@ -214,21 +215,30 @@ funding_sources[] ordered by priority:
 ```
 
 The internal Kafka record key is the normalized PAN for same-card ordering; PAN
-is not duplicated in the event payload. Wolfsburg combines the snapshot with
-live TigerBeetle balances. It never trusts a cached balance or a prebuilt CP
+is not duplicated in the event payload. For `UPSERT`, Wolfsburg combines the
+non-empty source snapshot with live TigerBeetle balances. For `DELETE`, the
+source list must be empty and Wolfsburg removes `CP:{card_number}` without
+querying source balances. It never trusts a cached balance or a prebuilt CP
 value from the command.
 
 Wolfsburg must:
 
 - preserve same-card ordering using normalized card number as partition key;
 - read balances only from TigerBeetle;
-- reject a command whose source list/cardinality/account mapping violates the
-  documented CP contract;
+- reject an `UPSERT` with no source, a `DELETE` with any source, or any command
+  whose source cardinality/account mapping violates the documented CP contract;
 - never persist debit/credit balances in Oracle;
 - compute funding-source capacity from current ledger facts and configured
   cardholder caps;
-- write a complete replacement CP; and
-- release the matching card mutation lock only after the replacement is durable.
+- write a complete replacement CP for `UPSERT`, or durably delete CP for
+  `DELETE`;
+- emit the normal CP materialization receipt for either action; and
+- release the matching card mutation lock only after the selected action is
+  durable.
+
+The latest card state always wins. Wolfsburg must compare `state_version` before
+applying either action. An older delayed command may be deduplicated and
+acknowledged, but it must never overwrite or recreate a newer runtime state.
 
 ## 7. Fee Profile Materialization
 
@@ -301,6 +311,34 @@ For CP, a valid receipt has `profile_type = CP`, no `profile_id`,
 `cards.materialized_version`, records the receipt/inbox evidence, and clears the
 matching pending publication operation. Stale or mismatched receipts fail
 closed and cannot advance card state.
+The same receipt contract applies when `runtime_action = DELETE`; receipt
+success proves that the obsolete CP key is absent for that card version.
+For Wurzburg provider-credit grant/full-return operations, the matching valid CP
+receipt is also the final financial projection proof: Wurzburg advances the
+deterministic movement WAL from `EXTERNAL_VERIFIED` to `COMPLETED`. Provider-
+facing event delivery or suppression is independent and must never delay this
+receipt.
+
+### Canonical Transaction Facts
+
+After a Nuremberg Confirm or Rollback outcome is durably verified, Wolfsburg
+must insert one immutable `financial_transactions` header and all ordered
+`financial_transaction_entries` in the same Oracle transaction as its consumer
+inbox/final processing state. The header uses the Nuremberg event ID as the
+unique `source_event_id`. Replay of the same event resolves to the existing
+transaction and must never create duplicate entries.
+
+Multi-provider Confirm creates Provider-scoped principal entries for every
+FundingPlan allocation. Fee effects create `PROVIDER_FEE` or `PROVIDER_USER`
+debit entries according to the immutable fee snapshot and matching
+`PLATFORM_FEE` credit entries. Rollback creates a separate
+`WITHDRAWAL_ROLLED_BACK` transaction linked through `original_transaction_id`;
+it never deletes Confirm history. Wolfsburg may mark the original header
+`REVERSED` only in that same verified rollback transaction.
+
+These tables are reporting evidence, not a balance store. Wolfsburg must not
+copy TigerBeetle debit/credit balances into Oracle. Wurzburg transaction APIs
+apply entry-level Provider visibility to these facts.
 
 ## 9. Delivery And Recovery
 

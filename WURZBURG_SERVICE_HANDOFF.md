@@ -158,6 +158,7 @@ State/fact                                  Authoritative owner/store
 Provider/user/card/range relationships      Wurzburg / Oracle
 Policy, fee, operational config versions    Wurzburg / Oracle
 Idempotency, WAL, audit, outbox              Wurzburg / Oracle
+Immutable financial transaction facts       Wurzburg/Wolfsburg / Oracle
 CMS event and rollback/reconciliation facts Wolfsburg / Oracle
 Money balances and debit/credit counters    TigerBeetle only
 Policy usage counters                       TigerBeetle only
@@ -185,6 +186,8 @@ Oracle stores:
 - idempotency keys/request hashes and replayable API results
 - operation WAL state and deterministic external-effect identities
 - integration outbox/inbox and runtime-materialization receipts
+- immutable financial transaction headers and double-entry reporting facts,
+  never account balances
 - immutable before/after audit snapshots with trusted WSO2 actor context
 - batch/report job state and MinIO object references
 - business configuration with version/effective time/audit
@@ -206,6 +209,19 @@ Because Oracle is the sole implementation, database-neutral repository traits
 must not be added merely for abstraction aesthetics. Traits remain appropriate
 for genuinely substitutable external dependencies such as clocks, Kafka,
 Dragonfly, TigerBeetle, and object storage gateways.
+
+Canonical financial transaction facts have explicit source ownership:
+
+- Wurzburg inserts verified provider credit-grant and full-credit-return facts
+  in the same Oracle transaction that finalizes the corresponding WAL command.
+- Wolfsburg inserts verified Confirm, Rollback, and fee facts in the same Oracle
+  transaction that finalizes its deduplicated Nuremberg event processing.
+- A multi-provider transaction has one header and ordered provider/account
+  entries. Provider APIs filter visibility at the entry boundary, while
+  authorized cardholder and platform views may return the complete transaction.
+- Query APIs return persisted historical facts, not inferred ledger effects.
+  Every current balance shown by an API or generated report must be read from
+  TigerBeetle at generation time.
 
 Infrastructure integration and composition modules follow these ownership
 boundaries:
@@ -424,6 +440,15 @@ Core recovery principles:
 - use bounded worker leases, backoff, alerts, and operator replay/recovery tools
 - never rely on a client retry as the only recovery mechanism
 
+Wurzburg runs an autonomous Oracle-leased recovery worker for provider-user
+provisioning, issued-card provisioning, and provider-credit movement WAL types.
+Financial recovery reuses and verifies the exact deterministic TigerBeetle
+transfer, then finalizes forward; it never recalculates or compensates a
+historical amount. Recoverable intents carry only a safe durable
+actor/idempotency/trace context, and recovery spans link to the original request
+trace. A separate issuance completion pass closes batches whose rows became
+terminal before a process crash.
+
 Oracle-only commands do not need a financial WAL. They still commit state,
 audit, version changes, and outbox events atomically.
 
@@ -448,9 +473,17 @@ System-wide rules:
   ownership is verified
 - after a durable effect, retain/renew the lock until Wolfsburg materializes the
   corresponding version and releases it
+- continuously reconcile every pending card publication: own or renew its exact
+  operation token and remove any stale CP that reappears after restart
 - never use unconditional lock deletion
 - an expired lease does not authorize an old profile to overwrite a newer
   `card_state_version`
+
+Card profile refresh commands explicitly choose `UPSERT` or `DELETE`. The latter
+is used when no active funding source remains, such as suspension of the final
+provider. A newer committed card version supersedes older pending projection
+work; Wurzburg suppresses unpublished stale events, and Wolfsburg must never
+materialize an older version over the latest state.
 
 Provider-user balance changes do not alter cardholder funding order. A provider
 with zero available balance remains in the ordered source list with zero

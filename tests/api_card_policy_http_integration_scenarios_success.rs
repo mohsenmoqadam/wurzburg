@@ -429,12 +429,8 @@ async fn manages_policy_lifecycle_through_running_wurzburg_and_oracle() {
         .await
         .expect("outbox batch should lease");
     assert!(!claimed.is_empty());
-    assert!(
-        claimed
-            .iter()
-            .all(|event| event.envelope.schema_version == 1)
-    );
-    let retried_event_id = claimed[0].envelope.event_id;
+    assert!(claimed.iter().all(|event| event.schema_version == 1));
+    let retried_event_id = claimed[0].event_id;
     repository
         .reschedule_outbox_event(retried_event_id, relay_worker.clone(), false, 0)
         .await
@@ -445,7 +441,7 @@ async fn manages_policy_lifecycle_through_running_wurzburg_and_oracle() {
         .expect("rescheduled event should be claimable");
     let retried = reclaimed
         .iter()
-        .find(|event| event.envelope.event_id == retried_event_id)
+        .find(|event| event.event_id == retried_event_id)
         .expect("same immutable event should be retried");
     assert!(retried.attempt_count >= 2);
     repository
@@ -698,6 +694,10 @@ async fn attach_active_provider(pool: &OraclePool, card_range_id: Uuid) {
         connection.execute(
             "INSERT INTO providers (provider_id, legal_name, trade_name, status, created_by_subject, updated_by_subject) VALUES (:1, :2, :3, 'ACTIVE', :4, :4)",
             &[&provider_raw, &"Integration Provider", &"Integration", &"test-suite"],
+        ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute(
+            "INSERT INTO integration_operations (operation_id,operation_type,aggregate_type,aggregate_id,status,event_count,published_event_count) VALUES (:1,'PROVIDER_FEE_PROFILE_PUBLISH','PROVIDER',:2,'PUBLISHED',1,1)",
+            &[&fee_operation_raw, &provider_raw],
         ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
         connection.execute(
             "INSERT INTO integration_outbox (outbox_event_id, operation_id, event_type, aggregate_type, aggregate_id, partition_key, payload_json, status, published_at) VALUES (:1, :2, 'PROVIDER_FEE_PROFILE_PUBLISH_REQUESTED', 'PROVIDER', :3, :4, '{}', 'PUBLISHED', SYSTIMESTAMP)",

@@ -241,6 +241,14 @@ pub(crate) fn insert_range_control_outbox(
     projection: &RangeControlProjection<'_>,
     headers: &InternalEventHeaders,
 ) -> DbResult<()> {
+    super::outbox::insert_integration_operation(
+        connection,
+        projection.operation_id,
+        "CARD_RANGE_CONTROL_PUBLISH",
+        "CARD_RANGE",
+        projection.card_range_id,
+        1,
+    )?;
     let rows = connection.query(
         "SELECT provider_id FROM card_range_providers WHERE card_range_id=:1 AND status='ACTIVE' ORDER BY provider_id",
         &[&uuid_to_raw16(projection.card_range_id).to_vec()],

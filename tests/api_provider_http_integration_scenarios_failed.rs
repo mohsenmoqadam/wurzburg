@@ -45,6 +45,61 @@ async fn rejects_and_rolls_back_provider_failure_paths() {
     let address = start_server(state).await;
     let client = reqwest::Client::new();
 
+    let credit_provider_id = Uuid::new_v4();
+    let invalid_credit_key = Uuid::new_v4().to_string();
+    let invalid_credit = client
+        .post(format!(
+            "http://{address}/api/v1/providers/{credit_provider_id}/credits/grant"
+        ))
+        .bearer_auth(support::signed_provider_admin_jwt(credit_provider_id))
+        .header("Idempotency-Key", &invalid_credit_key)
+        .header("X-Correlation-Id", "provider-credit-invalid-contract")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "application/json")
+        .body(
+            serde_json::json!({
+                "user_id": Uuid::new_v4(),
+                "card_number": "1111000000000001",
+                "amount_rials": 0,
+                "provider_reference": "invalid-zero-grant",
+                "reason": "zero must be rejected",
+                "metadata": {}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let invalid_credit_status = invalid_credit.status();
+    let invalid_credit_body = invalid_credit.text().await.unwrap();
+    assert_eq!(invalid_credit_status, reqwest::StatusCode::BAD_REQUEST);
+    assert!(invalid_credit_body.contains("PROVIDER_CREDIT_CONTRACT_INVALID"));
+    assert_eq!(
+        count_idempotency(&repository.pool, &invalid_credit_key).await,
+        0
+    );
+
+    let cross_provider = client
+        .get(format!(
+            "http://{address}/api/v1/providers/{}/users/{}/credit?card_number=1111000000000001",
+            Uuid::new_v4(),
+            Uuid::new_v4()
+        ))
+        .bearer_auth(support::signed_provider_admin_jwt(credit_provider_id))
+        .header("X-Correlation-Id", "provider-credit-cross-provider")
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .unwrap();
+    let cross_provider_status = cross_provider.status();
+    let cross_provider_body = cross_provider.text().await.unwrap();
+    assert_eq!(cross_provider_status, reqwest::StatusCode::FORBIDDEN);
+    assert!(cross_provider_body.contains("PROVIDER_SCOPE_MISMATCH"));
+
     let invalid_enrollment_key = Uuid::new_v4().to_string();
     let (status, body) = post_json(
         &client,

@@ -141,7 +141,7 @@ CREATE TABLE provider_fee_profiles (
         REFERENCES provider_fee_profiles(provider_fee_profile_id),
     CONSTRAINT fk_pfp_publication_operation
         FOREIGN KEY (publication_operation_id)
-        REFERENCES integration_outbox(operation_id)
+        REFERENCES integration_operations(operation_id)
         DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT uq_pfp_provider_version UNIQUE (provider_id, version),
     CONSTRAINT ck_pfp_rate CHECK (rate_bps BETWEEN 0 AND 10000),

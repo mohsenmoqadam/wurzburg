@@ -7,11 +7,15 @@ use wurzburg::{
     config::Settings,
     db::oracle::verify_oracle_schema,
     messaging::{outbox_relay::start_outbox_relay, receipt_consumer::start_receipt_consumer},
+    runtime_profiles::start_card_profile_coordinator,
     services::{
         provider::ProviderService,
+        provider_credit::ProviderCreditService,
         provider_kafka::{ProviderKafkaService, start_provider_kafka_provisioning_worker},
         provider_operational_profile::start_provider_operational_profile_scheduler,
         provider_provisioning::start_provider_provisioning_worker,
+        provider_user::ProviderUserService,
+        wal_recovery::start_wal_recovery_worker,
     },
     state::AppState,
     telemetry,
@@ -66,6 +70,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider_operational_profile_scheduler = start_provider_operational_profile_scheduler(
         app_state.db.clone(),
         settings.provider_operational_profile_scheduler.clone(),
+    );
+    let card_profile_coordinator = start_card_profile_coordinator(
+        app_state.db.clone(),
+        app_state.card_profile_locks.clone(),
+        settings.card_profile_lock.clone(),
+    );
+    let wal_recovery = start_wal_recovery_worker(
+        app_state.db.clone(),
+        ProviderUserService::new(
+            app_state.db.clone(),
+            app_state.ledger_client.clone(),
+            settings.tigerbeetle.clone(),
+        ),
+        ProviderCreditService::new(
+            app_state.db.clone(),
+            app_state.ledger_client.clone(),
+            settings.tigerbeetle.clone(),
+            app_state.card_profile_locks.clone(),
+            app_state.provider_credit_locks.clone(),
+        ),
+        settings.wal_recovery.clone(),
     );
 
     // 5. Build main API router
@@ -158,14 +183,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 handle.shutdown().await;
             }
         };
+        let card_profile_shutdown = async {
+            if let Some(handle) = card_profile_coordinator {
+                handle.shutdown().await;
+            }
+        };
+        let wal_recovery_shutdown = async {
+            if let Some(handle) = wal_recovery {
+                handle.shutdown().await;
+            }
+        };
         let ledger_shutdown = ledger_worker.shutdown();
-        let (swagger_result, (), (), (), (), (), ()) = tokio::join!(
+        let (swagger_result, (), (), (), (), (), (), (), ()) = tokio::join!(
             swagger_result,
             outbox_shutdown,
             receipt_shutdown,
             core_shutdown,
             kafka_shutdown,
             operational_profile_shutdown,
+            card_profile_shutdown,
+            wal_recovery_shutdown,
             ledger_shutdown
         );
         swagger_result

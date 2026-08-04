@@ -5,6 +5,7 @@ pub mod domain;
 pub mod ledger;
 pub mod messaging;
 pub mod object_storage;
+pub mod runtime_profiles;
 pub mod security;
 pub mod services;
 pub mod state;

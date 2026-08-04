@@ -421,6 +421,12 @@ impl OracleRepository {
                 traced_db_step("integration_inbox.complete", || {
                     mark_receipt_inbox_processed(connection, receipt.receipt_event_id)
                 })?;
+                traced_db_step("integration_operations.materialize", || {
+                    super::outbox::mark_integration_operation_materialized(
+                        connection,
+                        receipt.operation_id,
+                    )
+                })?;
 
                 let activated = fetch_policy(connection, receipt.card_policy_profile_id)?;
                 traced_db_step("audit_logs.insert_receipt", || {
@@ -823,6 +829,14 @@ pub(crate) fn insert_policy_outbox(
     terms: &CardPolicyTerms,
     headers: &InternalEventHeaders,
 ) -> DbResult<()> {
+    super::outbox::insert_integration_operation(
+        connection,
+        operation_id,
+        "CARD_POLICY_PROFILE_PUBLISH",
+        "CARD_RANGE",
+        card_range_id,
+        1,
+    )?;
     let event_id = Uuid::new_v4();
     let envelope = InternalEventEnvelope::new(
         event_id,

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -14,6 +15,20 @@ pub struct MutationCommandContext {
     pub request: TrustedRequestContext,
     pub idempotency_key: IdempotencyKey,
     pub request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableMutationContext {
+    pub operation_type: String,
+    pub idempotency_key: String,
+    pub audit: TrustedAuditContext,
+    pub trace: crate::messaging::contract::InternalEventHeaders,
+}
+
+impl DurableMutationContext {
+    pub fn event_headers(&self) -> crate::messaging::contract::InternalEventHeaders {
+        self.trace.clone()
+    }
 }
 
 impl MutationCommandContext {
@@ -33,6 +48,19 @@ impl MutationCommandContext {
             actor_user_id: self.actor.user_id,
             correlation_id: self.request.correlation_id.clone(),
             request_id: self.request.request_id.to_string(),
+        }
+    }
+
+    pub fn durable(&self) -> DurableMutationContext {
+        let audit = self.audit_context();
+        DurableMutationContext {
+            operation_type: self.operation_type.clone(),
+            idempotency_key: self.idempotency_key.as_str().to_string(),
+            trace: crate::messaging::contract::InternalEventHeaders::from_current_span(
+                audit.correlation_id.clone(),
+                audit.request_id.clone(),
+            ),
+            audit,
         }
     }
 }

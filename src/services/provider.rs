@@ -348,9 +348,6 @@ impl ProviderService {
             ProviderLifecycleOutcome::PrerequisitesMissing => Err(ApiError::new(
                 WurzburgResultCode::ProviderProvisioningPending,
             )),
-            ProviderLifecycleOutcome::PublicationPending => Err(ApiError::new(
-                WurzburgResultCode::RangeControlPublicationPending,
-            )),
             ProviderLifecycleOutcome::IdempotencyConflict => {
                 Err(ApiError::new(WurzburgResultCode::IdempotencyKeyConflict))
             }

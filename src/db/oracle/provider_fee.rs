@@ -308,6 +308,7 @@ impl OracleRepository {
                 return Err(DbError::Query("pending fee profile changed before activation".to_string()));
             }
             complete_inbox(connection, receipt.receipt_event_id)?;
+            super::outbox::mark_integration_operation_materialized(connection, receipt.operation_id)?;
             let active = fetch_fee_profile(connection, receipt.provider_fee_profile_id)?;
             insert_audit_log(connection, NewAuditLog {
                 audit_log_id: Uuid::new_v4(), entity_type: "PROVIDER_FEE_PROFILE".to_string(), entity_id: active.provider_fee_profile_id,
@@ -387,6 +388,14 @@ pub(crate) fn insert_fee_profile_outbox(
     policy: &FeePolicy,
     headers: &InternalEventHeaders,
 ) -> DbResult<()> {
+    super::outbox::insert_integration_operation(
+        connection,
+        operation_id,
+        "PROVIDER_FEE_PROFILE_PUBLISH",
+        "PROVIDER",
+        provider_id,
+        1,
+    )?;
     let event_id = Uuid::new_v4();
     let envelope = InternalEventEnvelope::new(
         event_id,

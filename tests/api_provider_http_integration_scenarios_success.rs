@@ -17,6 +17,10 @@ use wurzburg::{
     },
     messaging::contract::RuntimeMaterializationReceipt,
     object_storage::initialize_bucket,
+    services::{
+        provider_credit::ProviderCreditService, provider_user::ProviderUserService,
+        wal_recovery::start_wal_recovery_worker,
+    },
     state::AppState,
 };
 
@@ -45,7 +49,16 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     );
     let repository = state.db.clone();
     let ledger_client = state.ledger_client.clone();
-    let app = build_app_router(state);
+    let card_profile_locks = state.card_profile_locks.clone();
+    let provider_credit_service = ProviderCreditService::new(
+        repository.clone(),
+        ledger_client.clone(),
+        state.config.tigerbeetle.clone(),
+        card_profile_locks.clone(),
+        state.provider_credit_locks.clone(),
+    );
+    let dragonfly = state.redis.clone();
+    let app = build_app_router(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -295,8 +308,9 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     );
 
     let enrollment_key = Uuid::new_v4().to_string();
+    let national_id = unique_valid_national_id();
     let enrollment_body = serde_json::json!({
-        "national_id":"0013547852",
+        "national_id":national_id.clone(),
         "first_name":"Integration",
         "last_name":"Cardholder",
         "provider_customer_reference":format!("customer-{provider_id}"),
@@ -425,6 +439,7 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     );
     let provider_user: serde_json::Value = serde_json::from_str(&provider_user_body).unwrap();
     assert_eq!(provider_user["status"], "ACTIVE");
+    let provider_user_id = value_uuid(&provider_user, "provider_user_id");
     let provider_user_account_id = value_uuid(&provider_user, "provider_user_account_id");
     let provider_user_accounts = ledger_client
         .lookup_account(provider_user_account_id.as_u128())
@@ -447,8 +462,685 @@ async fn creates_and_replays_provider_with_four_verified_accounts() {
     );
     let projection_text = projection.to_string();
     assert!(!projection_text.contains(&issued_pan));
-    assert!(!projection_text.contains("0013547852"));
+    assert!(!projection_text.contains(&national_id));
     assert!(!projection_text.contains("Integration"));
+
+    // Wolfsburg materializes the initial card profile before a cardholder or
+    // platform operator may replace its funding order.
+    let initial_operation_id = value_uuid(&projection, "operation_id");
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: initial_operation_id,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 1,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("initial card receipt should complete");
+
+    // Credit movement uses the production HTTP, WSO2, Dragonfly, Oracle WAL,
+    // TigerBeetle, and outbox boundaries. Wolfsburg is emulated only for the
+    // final materialization receipt because it is a separate service.
+    let provider_token = support::signed_provider_admin_jwt(provider_id);
+    let cardholder_token = support::signed_cardholder_jwt(user_id);
+    let mut dragonfly_connection = dragonfly.get().await.unwrap();
+    redis::cmd("SET")
+        .arg(format!("CP:{issued_pan}"))
+        .arg("stale-before-credit-grant")
+        .query_async::<String>(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    drop(dragonfly_connection);
+
+    let grant_key = Uuid::new_v4().to_string();
+    let grant_reference = format!("grant-{provider_id}");
+    let grant_body = serde_json::json!({
+        "user_id": user_id,
+        "card_number": issued_pan,
+        "amount_rials": 250_000,
+        "provider_reference": grant_reference,
+        "reason": "integration credit grant",
+        "metadata": {"channel":"integration-test"}
+    })
+    .to_string();
+    let (grant_status, grant_text) = post_json_with_token(
+        &client,
+        address,
+        &provider_token,
+        &format!("/api/v1/providers/{provider_id}/credits/grant"),
+        &grant_key,
+        "provider-credit-grant",
+        &grant_body,
+    )
+    .await;
+    assert_eq!(grant_status, reqwest::StatusCode::ACCEPTED, "{grant_text}");
+    let grant: serde_json::Value = serde_json::from_str(&grant_text).unwrap();
+    assert_eq!(grant["movement_type"], "GRANT");
+    assert_eq!(grant["amount_rials"], 250_000);
+    assert_eq!(grant["command_status"], "APPLIED");
+    assert_eq!(grant["profile_materialization_status"], "PENDING");
+    let grant_operation_id = value_uuid(&grant, "operation_id");
+    let mut dragonfly_connection = dragonfly.get().await.unwrap();
+    let stale_cp: Option<String> = redis::cmd("GET")
+        .arg(format!("CP:{issued_pan}"))
+        .query_async(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    assert!(stale_cp.is_none(), "credit grant must invalidate stale CP");
+    drop(dragonfly_connection);
+
+    let (provider_balance_status, provider_balance_text) = get_json_with_token(
+        &client,
+        address,
+        &provider_token,
+        &format!("/api/v1/providers/{provider_id}/users/{user_id}/credit?card_number={issued_pan}"),
+        "provider-credit-balance",
+    )
+    .await;
+    assert_eq!(
+        provider_balance_status,
+        reqwest::StatusCode::OK,
+        "{provider_balance_text}"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&provider_balance_text).unwrap()["observed_remaining_amount_rials"],
+        250_000
+    );
+
+    let (grant_replay_status, grant_replay_text) = post_json_with_token(
+        &client,
+        address,
+        &provider_token,
+        &format!("/api/v1/providers/{provider_id}/credits/grant"),
+        &grant_key,
+        "provider-credit-grant-replay",
+        &grant_body,
+    )
+    .await;
+    assert_eq!(
+        grant_replay_status,
+        reqwest::StatusCode::OK,
+        "{grant_replay_text}"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&grant_replay_text).unwrap(),
+        grant
+    );
+
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: grant_operation_id,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 2,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("credit grant CP receipt should complete the WAL");
+    assert!(
+        card_profile_locks
+            .release_materialized(&issued_pan, grant_operation_id)
+            .await
+            .unwrap()
+    );
+
+    let duplicate_reference_key = Uuid::new_v4().to_string();
+    let duplicate_reference_body = serde_json::json!({
+        "user_id": user_id,
+        "card_number": issued_pan,
+        "amount_rials": 1,
+        "provider_reference": grant_reference,
+        "reason": "duplicate provider reference",
+        "metadata": {}
+    })
+    .to_string();
+    let (duplicate_status, duplicate_text) = post_json_with_token(
+        &client,
+        address,
+        &provider_token,
+        &format!("/api/v1/providers/{provider_id}/credits/grant"),
+        &duplicate_reference_key,
+        "provider-credit-duplicate-reference",
+        &duplicate_reference_body,
+    )
+    .await;
+    assert_eq!(
+        duplicate_status,
+        reqwest::StatusCode::CONFLICT,
+        "{duplicate_text}"
+    );
+    assert!(duplicate_text.contains("PROVIDER_CREDIT_REFERENCE_CONFLICT"));
+    assert_eq!(
+        count_idempotency_key(&repository.pool, &duplicate_reference_key).await,
+        0,
+        "provider-reference conflict must roll back the provisional idempotency row"
+    );
+
+    let stale_return_body = serde_json::json!({
+        "expected_remaining_amount_rials": 249_999,
+        "reason": "stale cardholder view"
+    })
+    .to_string();
+    let (stale_return_status, stale_return_text) = post_json_with_token(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/providers/{provider_id}/credit/return"),
+        &Uuid::new_v4().to_string(),
+        "cardholder-credit-return-stale",
+        &stale_return_body,
+    )
+    .await;
+    assert_eq!(
+        stale_return_status,
+        reqwest::StatusCode::CONFLICT,
+        "{stale_return_text}"
+    );
+    assert!(stale_return_text.contains("PROVIDER_CREDIT_BALANCE_CHANGED"));
+
+    let full_return_body = serde_json::json!({
+        "expected_remaining_amount_rials": 250_000,
+        "reason": "cardholder returns all remaining provider credit"
+    })
+    .to_string();
+    let (return_status, return_text) = post_json_with_token(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/providers/{provider_id}/credit/return"),
+        &Uuid::new_v4().to_string(),
+        "cardholder-credit-return-full",
+        &full_return_body,
+    )
+    .await;
+    assert_eq!(
+        return_status,
+        reqwest::StatusCode::ACCEPTED,
+        "{return_text}"
+    );
+    let returned: serde_json::Value = serde_json::from_str(&return_text).unwrap();
+    assert_eq!(returned["movement_type"], "RETURN_FULL_BALANCE");
+    assert_eq!(returned["amount_rials"], 250_000);
+    let return_operation_id = value_uuid(&returned, "operation_id");
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: return_operation_id,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 3,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("credit return CP receipt should complete the WAL");
+    assert!(
+        card_profile_locks
+            .release_materialized(&issued_pan, return_operation_id)
+            .await
+            .unwrap()
+    );
+
+    let (cardholder_balance_status, cardholder_balance_text) = get_json_with_token(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/providers/{provider_id}/credit"),
+        "cardholder-credit-balance-after-return",
+    )
+    .await;
+    assert_eq!(
+        cardholder_balance_status,
+        reqwest::StatusCode::OK,
+        "{cardholder_balance_text}"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&cardholder_balance_text).unwrap()["observed_remaining_amount_rials"],
+        0
+    );
+
+    let issuance_wal_operation_id = stage_issuance_recovery(
+        &repository.pool,
+        batch_id,
+        issuance_request_id,
+        card_id,
+        provider_user_id,
+    )
+    .await;
+    let mut recovery_config = state.config.wal_recovery.clone();
+    recovery_config.poll_interval_ms = 25;
+    recovery_config.stale_after_ms = 60_000;
+    let recovery = start_wal_recovery_worker(
+        repository.clone(),
+        ProviderUserService::new(
+            repository.clone(),
+            ledger_client.clone(),
+            state.config.tigerbeetle.clone(),
+        ),
+        provider_credit_service.clone(),
+        recovery_config,
+    )
+    .expect("WAL recovery worker should start");
+    wait_for_issuance_recovery(&repository.pool, issuance_wal_operation_id, batch_id).await;
+    recovery.shutdown().await;
+    let recovered_projection = load_card_projection_payload(&repository.pool, card_id).await;
+    assert_eq!(
+        recovered_projection["payload"]["refresh_reason"],
+        "CARD_CREATED"
+    );
+    let recovered_operation_id = value_uuid(&recovered_projection, "operation_id");
+    assert_ne!(recovered_operation_id, initial_operation_id);
+    assert!(
+        card_profile_locks
+            .ensure_pending(&issued_pan, recovered_operation_id)
+            .await
+            .unwrap()
+    );
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: recovered_operation_id,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 3,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("recovered issuance CP receipt should complete");
+    assert!(
+        card_profile_locks
+            .release_materialized(&issued_pan, recovered_operation_id)
+            .await
+            .unwrap()
+    );
+
+    let provider_user_recovery_operation = stage_provider_user_recovery(
+        &repository.pool,
+        provider_user_id,
+        provider_id,
+        user_id,
+        card_id,
+        card_range_id,
+        provider_user_account_id,
+    )
+    .await;
+    let mut recovery_config = state.config.wal_recovery.clone();
+    recovery_config.poll_interval_ms = 25;
+    recovery_config.stale_after_ms = 60_000;
+    let recovery = start_wal_recovery_worker(
+        repository.clone(),
+        ProviderUserService::new(
+            repository.clone(),
+            ledger_client.clone(),
+            state.config.tigerbeetle.clone(),
+        ),
+        provider_credit_service.clone(),
+        recovery_config,
+    )
+    .expect("provider-user WAL recovery worker should start");
+    wait_for_provider_user_recovery(
+        &repository.pool,
+        provider_user_recovery_operation,
+        provider_user_id,
+    )
+    .await;
+    recovery.shutdown().await;
+    let provider_user_projection = load_card_projection_payload(&repository.pool, card_id).await;
+    assert_eq!(
+        provider_user_projection["payload"]["refresh_reason"],
+        "FUNDING_SOURCE_CHANGED"
+    );
+    let provider_user_projection_operation = value_uuid(&provider_user_projection, "operation_id");
+    assert!(
+        card_profile_locks
+            .ensure_pending(&issued_pan, provider_user_projection_operation)
+            .await
+            .unwrap()
+    );
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: provider_user_projection_operation,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 3,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("provider-user recovery CP receipt should complete");
+    assert!(
+        card_profile_locks
+            .release_materialized(&issued_pan, provider_user_projection_operation)
+            .await
+            .unwrap()
+    );
+    let mut dragonfly_connection = dragonfly.get().await.unwrap();
+    redis::cmd("SET")
+        .arg(format!("CP:{issued_pan}"))
+        .arg("stale-profile")
+        .query_async::<String>(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    drop(dragonfly_connection);
+
+    let funding_order_key = Uuid::new_v4().to_string();
+    let cardholder_token = support::signed_cardholder_jwt(user_id);
+    let funding_order_body = serde_json::json!({
+        "expected_card_state_version": 3,
+        "sources": [{"provider_id":provider_id,"max_amount_rials":5000000}],
+        "reason":"integration cardholder preference"
+    })
+    .to_string();
+    let competing_operation_id = Uuid::new_v4();
+    let competing_lock = match card_profile_locks
+        .acquire(&issued_pan, competing_operation_id)
+        .await
+        .unwrap()
+    {
+        wurzburg::runtime_profiles::CardProfileLockOutcome::Acquired(lock) => lock,
+        wurzburg::runtime_profiles::CardProfileLockOutcome::Busy => {
+            panic!("integration card should not already be locked")
+        }
+    };
+    let (locked_status, locked_body) = put_json(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/funding-order"),
+        &funding_order_key,
+        "card-funding-order-locked",
+        &funding_order_body,
+    )
+    .await;
+    assert_eq!(
+        locked_status,
+        reqwest::StatusCode::CONFLICT,
+        "{locked_body}"
+    );
+    assert!(locked_body.contains("CARD_PROFILE_LOCKED"));
+    assert!(card_profile_locks.release(&competing_lock).await.unwrap());
+    let (funding_status, funding_body) = put_json(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/funding-order"),
+        &funding_order_key,
+        "card-funding-order",
+        &funding_order_body,
+    )
+    .await;
+    assert_eq!(
+        funding_status,
+        reqwest::StatusCode::ACCEPTED,
+        "{funding_body}"
+    );
+    let funding: serde_json::Value = serde_json::from_str(&funding_body).unwrap();
+    assert_eq!(funding["state_version"], 4);
+    assert_eq!(funding["sources"][0]["priority"], 1);
+    assert_eq!(funding["sources"][0]["max_amount_rials"], 5_000_000);
+    let funding_operation_id = value_uuid(&funding, "operation_id");
+    let refreshed = load_card_projection_payload(&repository.pool, card_id).await;
+    assert_eq!(refreshed["event_type"], "CARD_PROFILE_REFRESH_REQUESTED");
+    assert_eq!(
+        refreshed["payload"]["refresh_reason"],
+        "FUNDING_ORDER_CHANGED"
+    );
+    assert_eq!(refreshed["payload"]["state_version"], 4);
+    let mut dragonfly_connection = dragonfly.get().await.unwrap();
+    let stale_cp: Option<String> = redis::cmd("GET")
+        .arg(format!("CP:{issued_pan}"))
+        .query_async(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    assert!(
+        stale_cp.is_none(),
+        "funding-order mutation must invalidate stale CP"
+    );
+    redis::cmd("SET")
+        .arg(format!("CP:{issued_pan}"))
+        .arg("replacement-profile")
+        .query_async::<String>(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    drop(dragonfly_connection);
+    assert!(
+        card_profile_locks
+            .ensure_pending(&issued_pan, funding_operation_id)
+            .await
+            .unwrap()
+    );
+    let mut dragonfly_connection = dragonfly.get().await.unwrap();
+    let recovered_cp: Option<String> = redis::cmd("GET")
+        .arg(format!("CP:{issued_pan}"))
+        .query_async(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    assert!(
+        recovered_cp.is_none(),
+        "coordination must remove a stale CP that reappears while publication is pending"
+    );
+    redis::cmd("SET")
+        .arg(format!("CP:{issued_pan}"))
+        .arg("replacement-profile")
+        .query_async::<String>(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    drop(dragonfly_connection);
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: funding_operation_id,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 4,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("funding-order CP receipt should complete");
+    assert!(
+        card_profile_locks
+            .release_materialized(&issued_pan, funding_operation_id)
+            .await
+            .unwrap()
+    );
+
+    let wrong_cardholder_token = support::signed_cardholder_jwt(Uuid::new_v4());
+    let wrong_owner_body=serde_json::json!({"expected_card_state_version":4,"sources":[{"provider_id":provider_id,"max_amount_rials":null}],"reason":"wrong cardholder"}).to_string();
+    let (wrong_owner_status, wrong_owner_response) = put_json(
+        &client,
+        address,
+        &wrong_cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/funding-order"),
+        &Uuid::new_v4().to_string(),
+        "card-funding-order-wrong-owner",
+        &wrong_owner_body,
+    )
+    .await;
+    assert_eq!(
+        wrong_owner_status,
+        reqwest::StatusCode::FORBIDDEN,
+        "{wrong_owner_response}"
+    );
+    assert!(wrong_owner_response.contains("CARDHOLDER_SCOPE_MISMATCH"));
+
+    let stale_order_body=serde_json::json!({"expected_card_state_version":1,"sources":[{"provider_id":provider_id,"max_amount_rials":null}],"reason":"stale card view"}).to_string();
+    let (stale_status, stale_body) = put_json(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/funding-order"),
+        &Uuid::new_v4().to_string(),
+        "card-funding-order-stale",
+        &stale_order_body,
+    )
+    .await;
+    assert_eq!(stale_status, reqwest::StatusCode::CONFLICT, "{stale_body}");
+    assert!(stale_body.contains("CARD_STATE_VERSION_CONFLICT"));
+
+    let (funding_replay_status, funding_replay_body) = put_json(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/funding-order"),
+        &funding_order_key,
+        "card-funding-order-replay",
+        &funding_order_body,
+    )
+    .await;
+    assert_eq!(
+        funding_replay_status,
+        reqwest::StatusCode::OK,
+        "{funding_replay_body}"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&funding_replay_body).unwrap(),
+        funding
+    );
+    let changed_funding_body=serde_json::json!({"expected_card_state_version":4,"sources":[{"provider_id":provider_id,"max_amount_rials":null}],"reason":"changed request"}).to_string();
+    let (funding_conflict_status, funding_conflict_body) = put_json(
+        &client,
+        address,
+        &cardholder_token,
+        &format!("/api/v1/cards/{issued_pan}/funding-order"),
+        &funding_order_key,
+        "card-funding-order-conflict",
+        &changed_funding_body,
+    )
+    .await;
+    assert_eq!(
+        funding_conflict_status,
+        reqwest::StatusCode::CONFLICT,
+        "{funding_conflict_body}"
+    );
+    assert!(funding_conflict_body.contains("IDEMPOTENCY_KEY_CONFLICT"));
+
+    let (suspend_status, suspend_body) = post_json(
+        &client,
+        address,
+        &format!("/api/v1/providers/{provider_id}/suspend"),
+        &Uuid::new_v4().to_string(),
+        "provider-suspend-with-card",
+        &serde_json::json!({"reason":"integration provider funding suspension"}).to_string(),
+    )
+    .await;
+    assert_eq!(suspend_status, reqwest::StatusCode::OK, "{suspend_body}");
+    assert_eq!(
+        load_funding_source_status(&repository.pool, card_id, provider_id).await,
+        "SUSPENDED"
+    );
+    let suspended_projection = load_card_projection_payload(&repository.pool, card_id).await;
+    assert_eq!(suspended_projection["payload"]["state_version"], 5);
+    assert_eq!(suspended_projection["payload"]["runtime_action"], "DELETE");
+    assert_eq!(
+        suspended_projection["payload"]["refresh_reason"],
+        "PROVIDER_STATUS_CHANGED"
+    );
+    let suspend_operation_id = value_uuid(&suspended_projection, "operation_id");
+    assert!(
+        card_profile_locks
+            .ensure_pending(&issued_pan, suspend_operation_id)
+            .await
+            .unwrap()
+    );
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: suspend_operation_id,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 5,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("provider suspension CP deletion receipt should complete");
+    assert!(
+        card_profile_locks
+            .release_materialized(&issued_pan, suspend_operation_id)
+            .await
+            .unwrap()
+    );
+
+    let (reactivate_status, reactivate_body) = post_json(
+        &client,
+        address,
+        &format!("/api/v1/providers/{provider_id}/activate"),
+        &Uuid::new_v4().to_string(),
+        "provider-reactivate-with-card",
+        &serde_json::json!({"reason":"integration provider funding reactivation"}).to_string(),
+    )
+    .await;
+    assert_eq!(
+        reactivate_status,
+        reqwest::StatusCode::OK,
+        "{reactivate_body}"
+    );
+    assert_eq!(
+        load_funding_source_status(&repository.pool, card_id, provider_id).await,
+        "ACTIVE"
+    );
+    let reactivated_projection = load_card_projection_payload(&repository.pool, card_id).await;
+    assert_eq!(reactivated_projection["payload"]["state_version"], 6);
+    assert_eq!(
+        reactivated_projection["payload"]["runtime_action"],
+        "UPSERT"
+    );
+    assert_eq!(
+        reactivated_projection["payload"]["funding_sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let reactivate_operation_id = value_uuid(&reactivated_projection, "operation_id");
+    assert!(
+        card_profile_locks
+            .ensure_pending(&issued_pan, reactivate_operation_id)
+            .await
+            .unwrap()
+    );
+    let mut dragonfly_connection = dragonfly.get().await.unwrap();
+    redis::cmd("SET")
+        .arg(format!("CP:{issued_pan}"))
+        .arg("reactivated-profile")
+        .query_async::<String>(&mut dragonfly_connection)
+        .await
+        .unwrap();
+    drop(dragonfly_connection);
+    repository
+        .apply_card_profile_receipt(RuntimeMaterializationReceipt {
+            receipt_event_id: Uuid::new_v4(),
+            operation_id: reactivate_operation_id,
+            profile_type: "CP".to_string(),
+            aggregate_id: card_id,
+            profile_id: None,
+            materialized_version: 6,
+            runtime_key: format!("CP:{issued_pan}"),
+            materialized_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("provider reactivation CP receipt should complete");
+    assert!(
+        card_profile_locks
+            .release_materialized(&issued_pan, reactivate_operation_id)
+            .await
+            .unwrap()
+    );
 
     let mappings = repository
         .get_provider_ledger_mappings(provider_id)
@@ -594,6 +1286,60 @@ async fn post_json(
     (status, text)
 }
 
+async fn post_json_with_token(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    token: &str,
+    path: &str,
+    key: &str,
+    correlation: &str,
+    body: &str,
+) -> (reqwest::StatusCode, String) {
+    let response = client
+        .post(format!("http://{address}{path}"))
+        .bearer_auth(token)
+        .header("Idempotency-Key", key)
+        .header("X-Correlation-Id", correlation)
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    (status, text)
+}
+
+async fn put_json(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    token: &str,
+    path: &str,
+    key: &str,
+    correlation: &str,
+    body: &str,
+) -> (reqwest::StatusCode, String) {
+    let response = client
+        .put(format!("http://{address}{path}"))
+        .bearer_auth(token)
+        .header("Idempotency-Key", key)
+        .header("X-Correlation-Id", correlation)
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    (status, text)
+}
+
 async fn get_json(
     client: &reqwest::Client,
     address: std::net::SocketAddr,
@@ -612,6 +1358,28 @@ async fn get_json(
         .expect("read HTTP request should complete");
     let status = response.status();
     let text = response.text().await.expect("read response should read");
+    (status, text)
+}
+
+async fn get_json_with_token(
+    client: &reqwest::Client,
+    address: std::net::SocketAddr,
+    token: &str,
+    path: &str,
+    correlation: &str,
+) -> (reqwest::StatusCode, String) {
+    let response = client
+        .get(format!("http://{address}{path}"))
+        .bearer_auth(token)
+        .header("X-Correlation-Id", correlation)
+        .header("X-Request-Id", Uuid::new_v4().to_string())
+        .header("X-WSO2-Client-IP", "198.51.100.20")
+        .header("X-WSO2-Gateway-Id", "wso2-integration-test")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
     (status, text)
 }
 
@@ -651,7 +1419,7 @@ async fn load_card_projection_payload(
     pool.with_connection(move |connection| {
         let payload: String = connection
             .query_row_as(
-                "SELECT JSON_SERIALIZE(payload_json RETURNING CLOB) FROM integration_outbox WHERE aggregate_id=:1 AND event_type='CARD_PROFILE_PUBLISH_REQUESTED' ORDER BY created_at DESC FETCH FIRST 1 ROW ONLY",
+                "SELECT JSON_SERIALIZE(payload_json RETURNING CLOB) FROM integration_outbox WHERE aggregate_id=:1 AND event_type='CARD_PROFILE_REFRESH_REQUESTED' ORDER BY created_at DESC FETCH FIRST 1 ROW ONLY",
                 &[&card_raw],
             )
             .map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
@@ -660,6 +1428,185 @@ async fn load_card_projection_payload(
     })
     .await
     .expect("card projection outbox payload should load")
+}
+
+async fn load_funding_source_status(
+    pool: &wurzburg::db::oracle::OraclePool,
+    card_id: Uuid,
+    provider_id: Uuid,
+) -> String {
+    let card_raw = wurzburg::db::oracle::types::uuid_to_raw16(card_id).to_vec();
+    let provider_raw = wurzburg::db::oracle::types::uuid_to_raw16(provider_id).to_vec();
+    pool.with_connection(move |connection| {
+        connection
+            .query_row_as(
+                "SELECT status FROM card_provider_funding_sources WHERE card_id=:1 AND provider_id=:2",
+                &[&card_raw, &provider_raw],
+            )
+            .map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))
+    })
+    .await
+    .expect("funding-source status should load")
+}
+
+async fn count_idempotency_key(pool: &wurzburg::db::oracle::OraclePool, key: &str) -> i64 {
+    let key = key.to_string();
+    pool.with_connection(move |connection| {
+        connection
+            .query_row_as(
+                "SELECT COUNT(*) FROM idempotency_records WHERE idempotency_key=:1",
+                &[&key],
+            )
+            .map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))
+    })
+    .await
+    .expect("idempotency count should load")
+}
+
+async fn stage_issuance_recovery(
+    pool: &wurzburg::db::oracle::OraclePool,
+    batch_id: Uuid,
+    issuance_request_id: Uuid,
+    card_id: Uuid,
+    provider_user_id: Uuid,
+) -> Uuid {
+    let batch_raw = wurzburg::db::oracle::types::uuid_to_raw16(batch_id).to_vec();
+    let request_raw = wurzburg::db::oracle::types::uuid_to_raw16(issuance_request_id).to_vec();
+    let card_raw = wurzburg::db::oracle::types::uuid_to_raw16(card_id).to_vec();
+    let provider_user_raw = wurzburg::db::oracle::types::uuid_to_raw16(provider_user_id).to_vec();
+    pool.with_transaction("stage issuance recovery integration scenario", move |connection| {
+        let operation_raw: Vec<u8> = connection.query_row_as(
+            "SELECT operation_id FROM operation_wal WHERE aggregate_id=:1 AND operation_type='CARD_ISSUANCE_ACCOUNT_PROVISION'",
+            &[&request_raw],
+        ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        let injected_error = serde_json::json!({"code":"INTEGRATION_INJECTED"}).to_string();
+        connection.execute("UPDATE operation_wal SET status='FAILED',attempt_count=0,next_attempt_at=NULL,locked_by=NULL,locked_until=NULL,error_json=:1,completed_at=NULL,updated_at=SYSTIMESTAMP WHERE operation_id=:2", &[&injected_error,&operation_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE cards SET status='RECOVERY_REQUIRED',publication_operation_id=NULL,updated_at=SYSTIMESTAMP WHERE card_id=:1", &[&card_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE card_policy_usage_accounts SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE card_id=:1", &[&card_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE provider_users SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE provider_user_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE provider_user_accounts SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE provider_user_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE card_provider_funding_sources SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE provider_user_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE card_issuance_requests SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE card_issuance_request_id=:1", &[&request_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE card_issuance_request_providers SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE card_issuance_request_id=:1", &[&request_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE card_issuance_batch_rows SET result_status='RECOVERY_REQUIRED',safe_result_code='INTEGRATION_INJECTED',processed_at=SYSTIMESTAMP WHERE card_issuance_batch_id=:1 AND card_issuance_request_id=:2", &[&batch_raw,&request_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE card_issuance_batches SET status='PROCESSING_RESULT',issued_count=0,rejected_count=0,failed_count=0,completed_at=NULL,updated_at=SYSTIMESTAMP WHERE card_issuance_batch_id=:1", &[&batch_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE idempotency_records SET status='IN_PROGRESS',response_snapshot=NULL,completed_at=NULL,updated_at=SYSTIMESTAMP WHERE operation_type='card_issuance_batches.process_result' AND resource_id=:1", &[&batch_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        wurzburg::db::oracle::types::raw16_to_uuid(&operation_raw)
+    }).await.expect("issuance recovery state should be staged")
+}
+
+async fn wait_for_issuance_recovery(
+    pool: &wurzburg::db::oracle::OraclePool,
+    operation_id: Uuid,
+    batch_id: Uuid,
+) {
+    let operation_raw = wurzburg::db::oracle::types::uuid_to_raw16(operation_id).to_vec();
+    let batch_raw = wurzburg::db::oracle::types::uuid_to_raw16(batch_id).to_vec();
+    for _ in 0..200 {
+        let operation_raw = operation_raw.clone();
+        let batch_raw = batch_raw.clone();
+        let completed = pool.with_connection(move |connection| {
+            let wal_status = connection.query_row_as::<String>(
+                "SELECT status FROM operation_wal WHERE operation_id=:1", &[&operation_raw],
+            ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+            let batch_status = connection.query_row_as::<String>(
+                "SELECT status FROM card_issuance_batches WHERE card_issuance_batch_id=:1", &[&batch_raw],
+            ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+            let idempotency_status = connection.query_row_as::<String>(
+                "SELECT status FROM idempotency_records WHERE operation_type='card_issuance_batches.process_result' AND resource_id=:1", &[&batch_raw],
+            ).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+            Ok(wal_status == "COMPLETED" && batch_status == "COMPLETED" && idempotency_status == "COMPLETED")
+        }).await.expect("WAL recovery status should load");
+        if completed {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("issuance WAL recovery did not complete before the test deadline");
+}
+
+async fn stage_provider_user_recovery(
+    pool: &wurzburg::db::oracle::OraclePool,
+    provider_user_id: Uuid,
+    provider_id: Uuid,
+    user_id: Uuid,
+    card_id: Uuid,
+    card_range_id: Uuid,
+    account_id: Uuid,
+) -> Uuid {
+    let operation_id = Uuid::new_v4();
+    let idempotency_id = Uuid::new_v4();
+    let idempotency_key = Uuid::new_v4().to_string();
+    let provider_user_raw = wurzburg::db::oracle::types::uuid_to_raw16(provider_user_id).to_vec();
+    let provider_raw = wurzburg::db::oracle::types::uuid_to_raw16(provider_id).to_vec();
+    let account_raw = wurzburg::db::oracle::types::uuid_to_raw16(account_id).to_vec();
+    let command_context = serde_json::json!({
+        "operation_type":"provider_users.enroll",
+        "idempotency_key":idempotency_key,
+        "audit":{
+            "actor_subject":"integration-provider-user-recovery",
+            "actor_client_id":"wurzburg-integration-test",
+            "actor_provider_id":provider_id,
+            "actor_user_id":null,
+            "actor_issuer":"https://wso2.example.test",
+            "source_ip":"198.51.100.20",
+            "correlation_id":"provider-user-wal-recovery",
+            "request_id":Uuid::new_v4().to_string()
+        },
+        "trace":{
+            "correlation_id":"provider-user-wal-recovery",
+            "request_id":Uuid::new_v4().to_string(),
+            "causation_id":null,
+            "traceparent":null,
+            "tracestate":null
+        }
+    });
+    let wal_request = serde_json::json!({
+        "command_context":command_context,
+        "provider_user_id":provider_user_id,
+        "provider_id":provider_id,
+        "user_id":user_id,
+        "card_id":card_id,
+        "card_range_id":card_range_id,
+        "provider_user_account_id":account_id,
+        "policy_usage_account_ids":wurzburg::domain::user_card::PolicyUsageAccountIds::for_card(card_id)
+    }).to_string();
+    let idempotency_key_for_db = command_context["idempotency_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    pool.with_transaction("stage provider-user recovery integration scenario", move |connection| {
+        connection.execute("UPDATE provider_users SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE provider_user_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE provider_user_accounts SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE provider_user_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("UPDATE card_provider_funding_sources SET status='RECOVERY_REQUIRED',updated_at=SYSTIMESTAMP WHERE provider_user_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("INSERT INTO idempotency_records (idempotency_record_id,operation_type,idempotency_key,request_hash,status,resource_type,resource_id,created_by_subject,created_by_client_id,actor_provider_id,correlation_id,request_id) VALUES (:1,'provider_users.enroll',:2,'integration-recovery-request','IN_PROGRESS','provider_user',:3,'integration-provider-user-recovery','wurzburg-integration-test',:4,'provider-user-wal-recovery',:5)", &[&wurzburg::db::oracle::types::uuid_to_raw16(idempotency_id).to_vec(),&idempotency_key_for_db,&provider_user_raw,&provider_raw,&Uuid::new_v4().to_string()]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        connection.execute("INSERT INTO operation_wal (operation_id,operation_type,aggregate_type,aggregate_id,status,deterministic_external_id,request_json,error_json) VALUES (:1,'PROVIDER_USER_ACCOUNT_PROVISION','PROVIDER_USER',:2,'FAILED',:3,:4,:5)", &[&wurzburg::db::oracle::types::uuid_to_raw16(operation_id).to_vec(),&provider_user_raw,&account_raw,&wal_request,&serde_json::json!({"code":"INTEGRATION_INJECTED"}).to_string()]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+        Ok(operation_id)
+    }).await.expect("provider-user recovery state should be staged")
+}
+
+async fn wait_for_provider_user_recovery(
+    pool: &wurzburg::db::oracle::OraclePool,
+    operation_id: Uuid,
+    provider_user_id: Uuid,
+) {
+    let operation_raw = wurzburg::db::oracle::types::uuid_to_raw16(operation_id).to_vec();
+    let provider_user_raw = wurzburg::db::oracle::types::uuid_to_raw16(provider_user_id).to_vec();
+    for _ in 0..200 {
+        let operation_raw = operation_raw.clone();
+        let provider_user_raw = provider_user_raw.clone();
+        let completed = pool.with_connection(move |connection| {
+            let wal_status = connection.query_row_as::<String>("SELECT status FROM operation_wal WHERE operation_id=:1", &[&operation_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+            let user_status = connection.query_row_as::<String>("SELECT status FROM provider_users WHERE provider_user_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+            let idempotency_status = connection.query_row_as::<String>("SELECT status FROM idempotency_records WHERE operation_type='provider_users.enroll' AND resource_id=:1", &[&provider_user_raw]).map_err(|error| wurzburg::db::error::DbError::Query(error.to_string()))?;
+            Ok(wal_status == "COMPLETED" && user_status == "ACTIVE" && idempotency_status == "COMPLETED")
+        }).await.expect("provider-user recovery status should load");
+        if completed {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("provider-user WAL recovery did not complete before the test deadline");
 }
 
 fn provider_body(marker: &str) -> String {
@@ -690,6 +1637,23 @@ fn provider_body(marker: &str) -> String {
             }
         }
     }).to_string()
+}
+
+fn unique_valid_national_id() -> String {
+    let seed = Uuid::new_v4().as_u128() % 900_000_000 + 100_000_000;
+    let first_nine = format!("{seed:09}");
+    let sum: u32 = first_nine
+        .bytes()
+        .enumerate()
+        .map(|(index, digit)| u32::from(digit - b'0') * (10 - index as u32))
+        .sum();
+    let remainder = sum % 11;
+    let check = if remainder < 2 {
+        remainder
+    } else {
+        11 - remainder
+    };
+    format!("{first_nine}{check}")
 }
 
 async fn post_provider(

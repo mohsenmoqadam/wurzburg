@@ -44,6 +44,9 @@ impl OracleMigrator {
                     "card_issuance_request_providers",
                     "card_issuance_requests",
                     "card_issuance_batches",
+                    "financial_transaction_entries",
+                    "financial_transactions",
+                    "provider_credit_movements",
                     "card_provider_funding_sources",
                     "card_policy_usage_accounts",
                     "cards",
@@ -67,6 +70,7 @@ impl OracleMigrator {
                     "kafka_poison_messages",
                     "integration_inbox",
                     "integration_outbox",
+                    "integration_operations",
                     "operation_wal",
                     "business_config_audit",
                     "business_config",
@@ -462,6 +466,29 @@ mod tests {
                 .contains("CREATE TABLE card_provider_funding_sources")
         );
         assert!(migration.sql.contains("uq_cpfs_account_one_active_card"));
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE provider_credit_movements")
+        );
+        assert!(migration.sql.contains("RETURN_FULL_BALANCE"));
+        assert!(migration.sql.contains("uq_pcm_provider_reference"));
+        assert!(
+            migration
+                .sql
+                .contains("deterministic_transfer_id RAW(16) NOT NULL UNIQUE")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE financial_transactions")
+        );
+        assert!(
+            migration
+                .sql
+                .contains("CREATE TABLE financial_transaction_entries")
+        );
+        assert!(migration.sql.contains("idx_fte_provider_transaction"));
         assert!(
             migration
                 .sql

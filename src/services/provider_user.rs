@@ -171,7 +171,7 @@ impl ProviderUserService {
                 }
                 let view = self
                     .repository
-                    .finalize_existing_card_enrollment_atomic(context.clone(), *intent)
+                    .finalize_existing_card_enrollment_atomic(context.durable(), *intent)
                     .await
                     .map_err(ApiError::from_database)?;
                 Ok(EnrollProviderUserOutcome::Activated(Box::new(view)))
@@ -230,7 +230,7 @@ impl ProviderUserService {
         }
     }
 
-    async fn provision_accounts(
+    pub(crate) async fn provision_accounts(
         &self,
         intent: &ExistingCardProvisioningIntent,
     ) -> Result<(), TigerBeetleError> {

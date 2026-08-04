@@ -287,8 +287,29 @@ pub struct CardProfileProjection {
     pub card_range_id: Uuid,
     pub funding_mode: String,
     pub state_version: i64,
+    pub runtime_action: CardProfileRuntimeAction,
+    pub refresh_reason: CardProfileRefreshReason,
     pub policy_usage_accounts: PolicyUsageAccountIds,
     pub funding_sources: Vec<CardProfileFundingSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CardProfileRuntimeAction {
+    Upsert,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CardProfileRefreshReason {
+    CardCreated,
+    FundingSourceChanged,
+    FundingOrderChanged,
+    CreditGranted,
+    CreditReturned,
+    ProviderStatusChanged,
+    Recovery,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -305,6 +326,31 @@ pub struct CardProfileLedgerAccounts {
     pub provider_fee_account: Uuid,
     pub cms_settlement_account: Uuid,
     pub platform_fee_account: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FundingOrderSource {
+    pub provider_id: Uuid,
+    pub max_amount_rials: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FundingOrderResult {
+    pub card_id: Uuid,
+    pub masked_card_number: String,
+    pub state_version: i64,
+    pub sources: Vec<FundingOrderAppliedSource>,
+    pub operation_id: Uuid,
+    pub command_status: String,
+    pub event_publication_status: String,
+    pub profile_materialization_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FundingOrderAppliedSource {
+    pub provider_id: Uuid,
+    pub priority: u16,
+    pub max_amount_rials: Option<u64>,
 }
 
 impl PolicyUsageAccountIds {

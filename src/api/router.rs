@@ -5,8 +5,9 @@ use axum::{
 use std::sync::Arc;
 
 use super::handlers::{
-    audit_logs, card_issuance, card_policies, card_ranges, provider_events, provider_fees,
-    provider_identity, provider_operational_profiles, provider_users, providers, system,
+    audit_logs, card_issuance, card_policies, card_ranges, cards, financial_transactions,
+    provider_credits, provider_events, provider_fees, provider_identity,
+    provider_operational_profiles, provider_users, providers, system,
 };
 use crate::telemetry::http::trace_http_request;
 use crate::{api::cors::manual_cors_middleware, state::AppState};
@@ -16,6 +17,62 @@ pub fn build_app_router(state: Arc<AppState>) -> Router {
     let system_routes = Router::new().route("/db-health", get(system::db_health));
 
     let api_router = Router::new()
+        .route(
+            "/providers/{provider_id}/transactions",
+            get(financial_transactions::list_provider_transactions),
+        )
+        .route(
+            "/providers/{provider_id}/users/{user_id}/transactions",
+            get(financial_transactions::list_provider_user_transactions),
+        )
+        .route(
+            "/providers/{provider_id}/cards/{card_number}/transactions",
+            get(financial_transactions::list_provider_card_transactions),
+        )
+        .route(
+            "/providers/{provider_id}/accounts/{account_category}/transactions",
+            get(financial_transactions::list_provider_account_transactions),
+        )
+        .route(
+            "/users/{user_id}/transactions",
+            get(financial_transactions::list_cardholder_transactions),
+        )
+        .route(
+            "/cards/{card_number}/transactions",
+            get(financial_transactions::list_cardholder_card_transactions),
+        )
+        .route(
+            "/admin/transactions",
+            get(financial_transactions::list_admin_transactions),
+        )
+        .route(
+            "/admin/cards/{card_number}/transactions",
+            get(financial_transactions::list_admin_card_transactions),
+        )
+        .route(
+            "/providers/{provider_id}/credits/grant",
+            post(provider_credits::grant_credit),
+        )
+        .route(
+            "/providers/{provider_id}/credits/return",
+            post(provider_credits::return_provider_credit),
+        )
+        .route(
+            "/providers/{provider_id}/users/{user_id}/credit",
+            get(provider_credits::get_provider_user_credit),
+        )
+        .route(
+            "/cards/{card_number}/providers/{provider_id}/credit",
+            get(provider_credits::get_cardholder_credit),
+        )
+        .route(
+            "/cards/{card_number}/providers/{provider_id}/credit/return",
+            post(provider_credits::return_cardholder_credit),
+        )
+        .route(
+            "/cards/{card_number}/funding-order",
+            axum::routing::put(cards::update_funding_order),
+        )
         .route(
             "/admin/card-issuance-batches",
             post(card_issuance::create_card_issuance_batch)

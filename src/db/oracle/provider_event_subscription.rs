@@ -236,6 +236,38 @@ fn fetch_subscription_set(
     }))
 }
 
+/// Resolves and snapshots every delivery gate in the same Oracle transaction
+/// that creates a provider-facing outbox row. The snapshot explains why an
+/// event was published or suppressed without tracking provider consumption.
+pub(crate) fn provider_event_delivery_gate(
+    connection: &oracle::Connection,
+    provider_id: Uuid,
+    event_type: ProviderEventType,
+) -> DbResult<(bool, serde_json::Value)> {
+    let set = fetch_subscription_set(connection, provider_id)?.ok_or_else(|| {
+        DbError::Query("provider disappeared while resolving event delivery".to_string())
+    })?;
+    let subscription = set
+        .subscriptions
+        .iter()
+        .find(|value| value.event_type == event_type)
+        .ok_or_else(|| DbError::Query("provider event subscription is missing".to_string()))?;
+    let blocked = blocked_by(&set, subscription.enabled);
+    let enabled = blocked.is_empty();
+    Ok((
+        enabled,
+        serde_json::json!({
+            "global_delivery_enabled": set.global_delivery_enabled,
+            "provider_delivery_enabled": set.provider_delivery_enabled,
+            "provider_active": set.provider_status == "ACTIVE",
+            "kafka_credential_active": set.credential_status.as_deref() == Some("ACTIVE"),
+            "subscription_enabled": subscription.enabled,
+            "subscription_version": set.version,
+            "blocked_by": blocked,
+        }),
+    ))
+}
+
 fn subscription_snapshot(value: &ProviderEventSubscriptionSet) -> serde_json::Value {
     let credential_active = value.credential_status.as_deref() == Some("ACTIVE");
     let provider_active = value.provider_status == "ACTIVE";

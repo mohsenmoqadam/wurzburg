@@ -47,6 +47,7 @@ impl OracleRepository {
             let statement = connection.execute("UPDATE card_ranges SET materialized_operational_version=:1, range_control_operation_id=NULL, updated_at=SYSTIMESTAMP WHERE card_range_id=:2 AND range_control_operation_id=:3 AND operational_version=:1", &[&receipt.materialized_version, &uuid_to_raw16(receipt.aggregate_id).to_vec(), &uuid_to_raw16(receipt.operation_id).to_vec()]).map_err(|error| DbError::Query(format!("failed to finalize range control: {error}")))?;
             if statement.row_count().map_err(|error| DbError::Query(format!("failed to inspect range control finalization: {error}")))? != 1 { return Err(DbError::Conflict("range control changed during receipt processing".to_string())); }
             complete_inbox(connection, receipt.receipt_event_id)?;
+            super::outbox::mark_integration_operation_materialized(connection, receipt.operation_id)?;
             let after = fetch_card_range(connection, receipt.aggregate_id)?;
             insert_audit_log(connection, NewAuditLog {
                 audit_log_id: Uuid::new_v4(),

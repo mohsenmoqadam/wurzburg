@@ -199,11 +199,13 @@ card.transactions:read
 
 platform.providers:read
 platform.providers:write
+platform.transactions:read
 platform.audit:read
 platform.card_ranges:read
 platform.card_ranges:write
 platform.card_issuance:read
 platform.card_issuance:write
+platform.cards.funding-order:write
 platform.policies:read
 platform.policies:write
 platform.fee_profiles:read
@@ -258,6 +260,7 @@ Admin event replay                           platform.provider_events:replay
 Cardholder funding order read/write          card.funding-order:read/write
 Cardholder provider-credit read/full return  card.credit:read/card.credit:return
 Cardholder transaction reads                 card.transactions:read
+Platform transaction reads                   platform.transactions:read
 Support reads                                matching support.*:read
 Report query/export                          reports.transactions:read/export
 Recovery inspection/mutation                 platform.recovery:read/write

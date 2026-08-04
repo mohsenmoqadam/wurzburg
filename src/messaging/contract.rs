@@ -91,6 +91,24 @@ impl InternalEventHeaders {
             tracestate,
         }
     }
+
+    pub fn link_to_span(&self, span: &tracing::Span) {
+        let Some(traceparent) = self.traceparent.as_deref() else {
+            return;
+        };
+        let mut carrier =
+            std::collections::HashMap::from([("traceparent".to_string(), traceparent.to_string())]);
+        if let Some(tracestate) = self.tracestate.as_deref() {
+            carrier.insert("tracestate".to_string(), tracestate.to_string());
+        }
+        let context = opentelemetry::global::get_text_map_propagator(|propagator| {
+            propagator.extract(&carrier)
+        });
+        let linked = context.span().span_context().clone();
+        if linked.is_valid() {
+            span.add_link(linked);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,13 +1,15 @@
 use std::{sync::Arc, time::Duration};
 
 use futures::{StreamExt, stream};
-use opentelemetry::trace::TraceContextExt;
 use rand::RngExt;
 use tokio::sync::watch;
 use tracing::Instrument;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::{config::KafkaOutboxRelayConfig, db::oracle::OracleRepository};
+use crate::{
+    config::KafkaOutboxRelayConfig,
+    db::oracle::{ClaimedOutboxDelivery, OracleRepository},
+    messaging::contract::InternalEventEnvelope,
+};
 
 use super::MessageProducer;
 
@@ -101,25 +103,48 @@ async fn publish_claimed_event(
         "kafka.outbox.publish",
         messaging.system = "kafka",
         messaging.operation.name = "publish",
-        messaging.destination.name = %config.topic,
-        messaging.message.id = %event.envelope.event_id,
-        event.type = %event.envelope.event_type,
-        operation.id = %event.envelope.operation_id,
+        messaging.message.id = %event.event_id,
+        event.type = %event.event_type,
+        operation.id = %event.operation_id,
         retry.count = event.attempt_count
     );
     link_original_trace(&span, &event.headers);
     async move {
-        let event_id = event.envelope.event_id;
-        if producer
-            .send_internal(
-                &config.topic,
-                &event.partition_key,
-                &event.envelope,
-                &event.headers,
-            )
-            .await
-            .is_ok()
-        {
+        let event_id = event.event_id;
+        let publication = match &event.delivery {
+            ClaimedOutboxDelivery::Internal => {
+                let envelope = serde_json::from_value::<InternalEventEnvelope<serde_json::Value>>(
+                    event.payload.clone(),
+                );
+                match envelope {
+                    Ok(envelope) => {
+                        producer
+                            .send_internal(
+                                &config.topic,
+                                &event.partition_key,
+                                &envelope,
+                                &event.headers,
+                            )
+                            .await
+                    }
+                    Err(error) => Err(anyhow::anyhow!("invalid claimed internal event: {error}")),
+                }
+            }
+            ClaimedOutboxDelivery::Provider { topic, provider_id } => {
+                tracing::Span::current().record("provider.id", provider_id.to_string());
+                producer
+                    .send_provider(
+                        topic,
+                        &event.partition_key,
+                        event.event_id,
+                        &event.event_type,
+                        event.schema_version,
+                        &event.payload,
+                    )
+                    .await
+            }
+        };
+        if publication.is_ok() {
             if let Err(error) = repository
                 .mark_outbox_published(event_id, config.worker_id.clone())
                 .await
@@ -169,20 +194,7 @@ fn link_original_trace(
     span: &tracing::Span,
     headers: &crate::messaging::contract::InternalEventHeaders,
 ) {
-    let Some(traceparent) = headers.traceparent.as_deref() else {
-        return;
-    };
-    let mut carrier =
-        std::collections::HashMap::from([("traceparent".to_string(), traceparent.to_string())]);
-    if let Some(tracestate) = headers.tracestate.as_deref() {
-        carrier.insert("tracestate".to_string(), tracestate.to_string());
-    }
-    let context =
-        opentelemetry::global::get_text_map_propagator(|propagator| propagator.extract(&carrier));
-    let linked = context.span().span_context().clone();
-    if linked.is_valid() {
-        span.add_link(linked);
-    }
+    headers.link_to_span(span);
 }
 
 #[cfg(test)]

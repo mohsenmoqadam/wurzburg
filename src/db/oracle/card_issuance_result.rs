@@ -1,7 +1,8 @@
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::command::MutationCommandContext,
+    api::command::{DurableMutationContext, MutationCommandContext},
     db::{
         error::{DbError, DbResult},
         oracle::{
@@ -20,7 +21,6 @@ use crate::{
         idempotency::IdempotencyStatus,
         user_card::{PolicyUsageAccountIds, deterministic_provider_user_account_id},
     },
-    messaging::contract::InternalEventHeaders,
 };
 
 #[derive(Debug, Clone)]
@@ -48,6 +48,41 @@ pub struct IssuedCardProvisioningIntent {
     pub issuance_request_id: Uuid,
     pub batch_id: Uuid,
     pub providers: Vec<IssuanceProviderAccountIntent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssuedCardFinalizationSnapshot {
+    pub issuance_request_id: Uuid,
+    pub issuer_reference: Option<String>,
+    pub produced_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub dispatched_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub tracking_reference: Option<String>,
+}
+
+impl IssuedCardFinalizationSnapshot {
+    fn from_result(result: &CardIssuanceResultRow) -> Self {
+        Self {
+            issuance_request_id: result.issuance_request_id,
+            issuer_reference: result.issuer_reference.clone(),
+            produced_at: result.produced_at,
+            dispatched_at: result.dispatched_at,
+            tracking_reference: result.tracking_reference.clone(),
+        }
+    }
+
+    pub fn into_result(self) -> CardIssuanceResultRow {
+        CardIssuanceResultRow {
+            issuance_request_id: self.issuance_request_id,
+            status: crate::domain::card_issuance::CardIssuanceResultStatus::Issued,
+            card_number: None,
+            issuer_reference: self.issuer_reference,
+            failure_code: None,
+            failure_message: None,
+            produced_at: self.produced_at,
+            dispatched_at: self.dispatched_at,
+            tracking_reference: self.tracking_reference,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +129,8 @@ impl OracleRepository {
             let mut expected_sorted = expected; expected_sorted.sort_unstable();
             if supplied != expected_sorted || supplied.len() != rows.len() { return Ok(BeginIssuanceResultOutcome::RowSetMismatch); }
             insert_idempotency_record(connection, context.new_idempotency_record())?;
-            connection.execute("UPDATE card_issuance_batches SET status='PROCESSING_RESULT',result_object_key=:1,result_checksum_sha256=:2,updated_by_subject=:3,updated_at=SYSTIMESTAMP WHERE card_issuance_batch_id=:4", &[&result_object_key, &checksum, &context.actor.subject, &raw(batch_id)]).map_err(|error| query("failed to start issuance result processing", error))?;
+            let durable_context = serde_json::to_string(&context.durable()).map_err(|error| DbError::Query(format!("failed to serialize issuance result context: {error}")))?;
+            connection.execute("UPDATE card_issuance_batches SET status='PROCESSING_RESULT',result_object_key=:1,result_checksum_sha256=:2,result_command_context_json=:3,updated_by_subject=:4,updated_at=SYSTIMESTAMP WHERE card_issuance_batch_id=:5", &[&result_object_key, &checksum, &durable_context, &context.actor.subject, &raw(batch_id)]).map_err(|error| query("failed to start issuance result processing", error))?;
             Ok(BeginIssuanceResultOutcome::Started)
         }).await
     }
@@ -174,7 +210,7 @@ impl OracleRepository {
             }
             if providers.is_empty() { return Err(DbError::Query("issued request has no pending providers".to_string())); }
             let operation_id = Uuid::new_v4();
-            let wal = serde_json::json!({"issuance_request_id":result.issuance_request_id,"batch_id":batch_id,"card_id":card_id,"card_range_id":range_id,"provider_accounts":providers.iter().map(|p| serde_json::json!({"provider_user_id":p.provider_user_id,"provider_id":p.provider_id,"account_id":p.account_id})).collect::<Vec<_>>(),"policy_usage_account_ids":usage}).to_string();
+            let wal = serde_json::json!({"command_context":context.durable(),"finalization":IssuedCardFinalizationSnapshot::from_result(&result),"issuance_request_id":result.issuance_request_id,"batch_id":batch_id,"card_id":card_id,"card_range_id":range_id,"provider_accounts":providers.iter().map(|p| serde_json::json!({"provider_user_id":p.provider_user_id,"provider_id":p.provider_id,"account_id":p.account_id})).collect::<Vec<_>>(),"policy_usage_account_ids":usage}).to_string();
             connection.execute("INSERT INTO operation_wal (operation_id,operation_type,aggregate_type,aggregate_id,status,request_json) VALUES (:1,'CARD_ISSUANCE_ACCOUNT_PROVISION','CARD_ISSUANCE_REQUEST',:2,'PENDING',:3)", &[&raw(operation_id), &request_raw, &wal]).map_err(|error| query("failed to create issued card WAL", error))?;
             connection.execute(
                 "UPDATE card_issuance_requests SET status='PROCESSING_RESULT',updated_at=SYSTIMESTAMP WHERE card_issuance_request_id=:1 AND status='EXPORTED'",
@@ -187,27 +223,24 @@ impl OracleRepository {
     #[tracing::instrument(skip(self, context, result), fields(db.system="oracle", db.operation.name="card_issuance_results.finalize_issued", batch_id=%intent.batch_id, issuance_request_id=%intent.issuance_request_id))]
     pub async fn finalize_issued_card_atomic(
         &self,
-        context: &MutationCommandContext,
+        context: &DurableMutationContext,
         intent: &IssuedCardProvisioningIntent,
         result: &CardIssuanceResultRow,
     ) -> DbResult<()> {
         let context = context.clone();
         let intent = intent.clone();
         let result = result.clone();
-        let event_headers = InternalEventHeaders::from_current_span(
-            context.request.correlation_id.clone(),
-            context.request.request_id.to_string(),
-        );
+        let event_headers = context.event_headers();
         self.pool.with_transaction("finalize issued card", move |connection| {
             let request_raw=raw(intent.issuance_request_id); let card_raw=raw(intent.base.card_id);
-            connection.execute("UPDATE cards SET status='ACTIVE',updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE card_id=:2 AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&context.actor.subject,&card_raw]).map_err(|error|query("failed to activate issued card",error))?;
+            connection.execute("UPDATE cards SET status='ACTIVE',updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE card_id=:2 AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&context.audit.actor_subject,&card_raw]).map_err(|error|query("failed to activate issued card",error))?;
             connection.execute("UPDATE card_policy_usage_accounts SET status='ACTIVE',updated_at=SYSTIMESTAMP WHERE card_id=:1 AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&card_raw]).map_err(|error|query("failed to activate issued usage accounts",error))?;
             connection.execute("UPDATE provider_user_accounts SET status='ACTIVE',updated_at=SYSTIMESTAMP WHERE provider_user_id IN (SELECT provider_user_id FROM card_issuance_request_providers WHERE card_issuance_request_id=:1) AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&request_raw]).map_err(|error|query("failed to activate issued provider-user accounts",error))?;
-            connection.execute("UPDATE provider_users SET status='ACTIVE',updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE provider_user_id IN (SELECT provider_user_id FROM card_issuance_request_providers WHERE card_issuance_request_id=:2) AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&context.actor.subject,&request_raw]).map_err(|error|query("failed to activate issued provider users",error))?;
-            connection.execute("UPDATE card_provider_funding_sources SET status='ACTIVE',updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE card_id=:2 AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&context.actor.subject,&card_raw]).map_err(|error|query("failed to activate issued funding sources",error))?;
+            connection.execute("UPDATE provider_users SET status='ACTIVE',updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE provider_user_id IN (SELECT provider_user_id FROM card_issuance_request_providers WHERE card_issuance_request_id=:2) AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&context.audit.actor_subject,&request_raw]).map_err(|error|query("failed to activate issued provider users",error))?;
+            connection.execute("UPDATE card_provider_funding_sources SET status='ACTIVE',updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE card_id=:2 AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&context.audit.actor_subject,&card_raw]).map_err(|error|query("failed to activate issued funding sources",error))?;
             connection.execute("UPDATE card_issuance_request_providers SET status='ACTIVE',updated_at=SYSTIMESTAMP WHERE card_issuance_request_id=:1 AND status IN ('PROVISIONING','RECOVERY_REQUIRED')", &[&request_raw]).map_err(|error|query("failed to activate issuance provider rows",error))?;
             let produced=result.produced_at.map(format_time); let dispatched=result.dispatched_at.map(format_time);
-            connection.execute("UPDATE card_issuance_requests SET status='ISSUED',issuer_reference=:1,produced_at=TO_TIMESTAMP_TZ(:2,'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'),dispatched_at=TO_TIMESTAMP_TZ(:3,'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'),tracking_reference=:4,updated_by_subject=:5,updated_at=SYSTIMESTAMP WHERE card_issuance_request_id=:6 AND status IN ('PROCESSING_RESULT','RECOVERY_REQUIRED')", &[&result.issuer_reference,&produced,&dispatched,&result.tracking_reference,&context.actor.subject,&request_raw]).map_err(|error|query("failed to finalize issued request",error))?;
+            connection.execute("UPDATE card_issuance_requests SET status='ISSUED',issuer_reference=:1,produced_at=TO_TIMESTAMP_TZ(:2,'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'),dispatched_at=TO_TIMESTAMP_TZ(:3,'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'),tracking_reference=:4,updated_by_subject=:5,updated_at=SYSTIMESTAMP WHERE card_issuance_request_id=:6 AND status IN ('PROCESSING_RESULT','RECOVERY_REQUIRED')", &[&result.issuer_reference,&produced,&dispatched,&result.tracking_reference,&context.audit.actor_subject,&request_raw]).map_err(|error|query("failed to finalize issued request",error))?;
             connection.execute("UPDATE card_issuance_batch_rows SET result_status='ISSUED',processed_at=SYSTIMESTAMP WHERE card_issuance_batch_id=:1 AND card_issuance_request_id=:2", &[&raw(intent.batch_id),&request_raw]).map_err(|error|query("failed to finalize issued batch row",error))?;
             let wal_response = serde_json::json!({"verified": true}).to_string();
             connection.execute("UPDATE operation_wal SET status='COMPLETED',response_json=:1,error_json=NULL,updated_at=SYSTIMESTAMP,completed_at=SYSTIMESTAMP WHERE operation_id=:2 AND status IN ('PENDING','EXTERNAL_IN_FLIGHT','EXTERNAL_VERIFIED','FAILED')", &[&wal_response, &raw(intent.base.operation_id)]).map_err(|error|query("failed to complete issued card WAL",error))?;
@@ -215,9 +248,10 @@ impl OracleRepository {
                 connection,
                 intent.base.card_id,
                 Uuid::new_v4(),
+                crate::domain::user_card::CardProfileRefreshReason::CardCreated,
                 &event_headers,
             )?;
-            insert_audit_log(connection,NewAuditLog{audit_log_id:Uuid::new_v4(),entity_type:"CARD".to_string(),entity_id:intent.base.card_id,action_type:AuditAction::Insert,reason:Some("Bank completed card issuance".to_string()),old_values:None,new_values:Some(serde_json::json!({"card_id":intent.base.card_id,"card_range_id":intent.base.card_range_id,"status":"ACTIVE","provider_count":intent.providers.len()})),context:context.audit_context()})?;
+            insert_audit_log(connection,NewAuditLog{audit_log_id:Uuid::new_v4(),entity_type:"CARD".to_string(),entity_id:intent.base.card_id,action_type:AuditAction::Insert,reason:Some("Bank completed card issuance".to_string()),old_values:None,new_values:Some(serde_json::json!({"card_id":intent.base.card_id,"card_range_id":intent.base.card_range_id,"status":"ACTIVE","provider_count":intent.providers.len()})),context:context.audit.clone()})?;
             Ok(())
         }).await
     }
@@ -225,7 +259,7 @@ impl OracleRepository {
     #[tracing::instrument(skip(self, context), fields(db.system="oracle", db.operation.name="card_issuance_results.complete", batch_id=%batch_id))]
     pub async fn complete_card_issuance_result_atomic(
         &self,
-        context: &MutationCommandContext,
+        context: &DurableMutationContext,
         batch_id: Uuid,
     ) -> DbResult<CardIssuanceBatch> {
         let context = context.clone();
@@ -234,9 +268,9 @@ impl OracleRepository {
             let request_count=connection.query_row_as::<i64>("SELECT request_count FROM card_issuance_batches WHERE card_issuance_batch_id=:1 FOR UPDATE", &[&raw(batch_id)]).map_err(|error|query("failed to lock completing issuance batch",error))?;
             if issued+rejected+failed != request_count { return Err(DbError::Conflict("issuance result still has unprocessed rows".to_string())); }
             let status=if failed==0{"COMPLETED"}else{"PARTIALLY_COMPLETED"};
-            connection.execute("UPDATE card_issuance_batches SET status=:1,issued_count=:2,rejected_count=:3,failed_count=:4,updated_by_subject=:5,updated_at=SYSTIMESTAMP,completed_at=SYSTIMESTAMP WHERE card_issuance_batch_id=:6 AND status='PROCESSING_RESULT'", &[&status,&issued,&rejected,&failed,&context.actor.subject,&raw(batch_id)]).map_err(|error|query("failed to complete issuance batch",error))?;
+            connection.execute("UPDATE card_issuance_batches SET status=:1,issued_count=:2,rejected_count=:3,failed_count=:4,updated_by_subject=:5,updated_at=SYSTIMESTAMP,completed_at=SYSTIMESTAMP WHERE card_issuance_batch_id=:6 AND status='PROCESSING_RESULT'", &[&status,&issued,&rejected,&failed,&context.audit.actor_subject,&raw(batch_id)]).map_err(|error|query("failed to complete issuance batch",error))?;
             let batch=super::card_issuance::fetch_batch(connection,batch_id)?.ok_or_else(||DbError::Query("completed issuance batch disappeared".to_string()))?;
-            complete_idempotency_record(connection,&context.operation_type,context.idempotency_key.as_str(),"card_issuance_batch",batch_id,serde_json::to_value(&batch).map_err(|error|DbError::Query(format!("failed to serialize completed issuance batch: {error}")))?)?;
+            complete_idempotency_record(connection,&context.operation_type,&context.idempotency_key,"card_issuance_batch",batch_id,serde_json::to_value(&batch).map_err(|error|DbError::Query(format!("failed to serialize completed issuance batch: {error}")))?)?;
             Ok(batch)
         }).await
     }
@@ -264,7 +298,7 @@ impl OracleRepository {
     }
 }
 
-fn load_issued_card_intent(
+pub(crate) fn load_issued_card_intent(
     connection: &oracle::Connection,
     batch_id: Uuid,
     issuance_request_id: Uuid,

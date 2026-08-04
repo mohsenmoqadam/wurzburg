@@ -30,6 +30,20 @@ impl Settings {
 
     fn validate(&self) -> Result<()> {
         self.kafka.validate()?;
+        anyhow::ensure!(
+            self.card_profile_lock.lease_duration_ms >= 5_000,
+            "Card-profile lock lease must be at least five seconds"
+        );
+        anyhow::ensure!(
+            self.card_profile_lock.renew_interval_ms > 0
+                && self.card_profile_lock.renew_interval_ms
+                    < self.card_profile_lock.lease_duration_ms,
+            "Card-profile lock renewal interval must be positive and shorter than its lease"
+        );
+        anyhow::ensure!(
+            self.card_profile_lock.coordinator_batch_size > 0,
+            "Card-profile coordinator batch size must be positive"
+        );
         if self.provider_kafka_access.enabled {
             let master_key_source = self.provider_kafka_access.master_key_source.trim();
             anyhow::ensure!(
@@ -95,6 +109,14 @@ impl Settings {
         anyhow::ensure!(
             self.provider_operational_profile_scheduler.poll_interval_ms > 0,
             "Provider operational profile scheduler poll interval must be positive"
+        );
+        anyhow::ensure!(
+            self.wal_recovery.batch_size > 0
+                && self.wal_recovery.poll_interval_ms > 0
+                && self.wal_recovery.lease_duration_ms > 0
+                && self.wal_recovery.stale_after_ms > self.wal_recovery.lease_duration_ms
+                && self.wal_recovery.max_attempts > 0,
+            "WAL recovery timing, batch size, and attempt limits are invalid"
         );
         anyhow::ensure!(
             !self.object_storage.endpoint.trim().is_empty(),

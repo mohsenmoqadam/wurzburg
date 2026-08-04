@@ -137,6 +137,54 @@ impl MessageProducer {
             .map_err(|(error, _)| anyhow::anyhow!("Kafka delivery failed: {error}"))?;
         Ok(())
     }
+
+    /// Publishes the stable provider-facing contract without leaking internal
+    /// tracing, correlation, causation, or request identifiers.
+    #[tracing::instrument(
+        skip(self, payload),
+        fields(
+            messaging.system = "kafka",
+            messaging.operation.name = "publish",
+            messaging.destination.name = topic,
+            messaging.message.id = %event_id,
+            event.type = event_type
+        )
+    )]
+    pub async fn send_provider<T: Serialize>(
+        &self,
+        topic: &str,
+        partition_key: &str,
+        event_id: uuid::Uuid,
+        event_type: &str,
+        schema_version: u16,
+        payload: &T,
+    ) -> Result<()> {
+        let payload = serde_json::to_vec(payload).context("failed to serialize provider event")?;
+        let event_id = event_id.to_string();
+        let schema_version = schema_version.to_string();
+        let headers = OwnedHeaders::new()
+            .insert(Header {
+                key: "event_id",
+                value: Some(event_id.as_str()),
+            })
+            .insert(Header {
+                key: "event_type",
+                value: Some(event_type),
+            })
+            .insert(Header {
+                key: "schema_version",
+                value: Some(schema_version.as_str()),
+            });
+        let record = FutureRecord::to(topic)
+            .key(partition_key)
+            .payload(payload.as_slice())
+            .headers(headers);
+        self.producer
+            .send(record, Timeout::After(self.delivery_timeout))
+            .await
+            .map_err(|(error, _)| anyhow::anyhow!("Kafka delivery failed: {error}"))?;
+        Ok(())
+    }
 }
 
 pub(crate) fn apply_security_config(

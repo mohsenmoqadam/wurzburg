@@ -15,7 +15,51 @@ pub enum CardProfileReceiptOutcome {
     Mismatch,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCardProfileOperation {
+    pub card_id: Uuid,
+    pub card_number: String,
+    pub operation_id: Uuid,
+}
+
 impl OracleRepository {
+    #[tracing::instrument(skip(self), fields(db.system="oracle", db.operation.name="card_profile.list_pending", limit))]
+    pub async fn list_pending_card_profile_operations(
+        &self,
+        limit: u16,
+    ) -> DbResult<Vec<PendingCardProfileOperation>> {
+        self.pool
+            .with_connection(move |connection| {
+                let rows = connection
+                    .query(
+                        "SELECT card_id,card_number,publication_operation_id FROM cards WHERE publication_operation_id IS NOT NULL ORDER BY updated_at,card_id FETCH FIRST :1 ROWS ONLY",
+                        &[&i64::from(limit)],
+                    )
+                    .map_err(|error| query("failed to list pending card profiles", error))?;
+                let mut pending = Vec::new();
+                for row in rows {
+                    let row = row
+                        .map_err(|error| query("failed to read pending card profile", error))?;
+                    let card_id: Vec<u8> = row
+                        .get(0)
+                        .map_err(|error| query("failed to map pending card id", error))?;
+                    let card_number: String = row
+                        .get(1)
+                        .map_err(|error| query("failed to map pending card number", error))?;
+                    let operation_id: Vec<u8> = row
+                        .get(2)
+                        .map_err(|error| query("failed to map pending card operation", error))?;
+                    pending.push(PendingCardProfileOperation {
+                        card_id: crate::db::oracle::types::raw16_to_uuid(&card_id)?,
+                        card_number,
+                        operation_id: crate::db::oracle::types::raw16_to_uuid(&operation_id)?,
+                    });
+                }
+                Ok(pending)
+            })
+            .await
+    }
+
     #[tracing::instrument(skip(self, receipt), fields(db.system="oracle", db.operation.name="card_profile.receipt", operation.id=%receipt.operation_id, messaging.message.id=%receipt.receipt_event_id))]
     pub async fn apply_card_profile_receipt(
         &self,
@@ -90,6 +134,18 @@ impl OracleRepository {
                     "UPDATE integration_inbox SET status='PROCESSED',processed_at=SYSTIMESTAMP WHERE source_system='WOLFSBURG' AND source_event_id=:1",
                     &[&raw(receipt.receipt_event_id)],
                 ).map_err(|error| query("failed to complete card receipt inbox", error))?;
+                super::outbox::mark_integration_operation_materialized(
+                    connection,
+                    receipt.operation_id,
+                )?;
+                // Financial movement WAL remains externally verified until the
+                // replacement CP is durable. Non-financial operations simply
+                // have no matching WAL row, so this update is intentionally
+                // allowed to affect zero rows.
+                connection.execute(
+                    "UPDATE operation_wal SET status='COMPLETED',updated_at=SYSTIMESTAMP,completed_at=SYSTIMESTAMP WHERE operation_id=:1 AND operation_type='PROVIDER_CREDIT_MOVEMENT' AND status='EXTERNAL_VERIFIED'",
+                    &[&raw(receipt.operation_id)],
+                ).map_err(|error| query("failed to complete materialized credit movement WAL", error))?;
                 Ok(CardProfileReceiptOutcome::Materialized)
             })
             .await

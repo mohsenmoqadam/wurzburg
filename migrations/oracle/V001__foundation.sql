@@ -117,27 +117,70 @@ CREATE TABLE business_config_audit (
         FOREIGN KEY (config_key) REFERENCES business_config(config_key)
 );
 
+CREATE TABLE integration_operations (
+    operation_id RAW(16) PRIMARY KEY,
+    operation_type VARCHAR2(150) NOT NULL,
+    aggregate_type VARCHAR2(100) NOT NULL,
+    aggregate_id RAW(16) NOT NULL,
+    status VARCHAR2(32) DEFAULT 'PENDING' NOT NULL,
+    event_count NUMBER(10,0) DEFAULT 0 NOT NULL,
+    published_event_count NUMBER(10,0) DEFAULT 0 NOT NULL,
+    materialized_at TIMESTAMP(6) WITH TIME ZONE,
+    safe_error_code VARCHAR2(128),
+    created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    completed_at TIMESTAMP(6) WITH TIME ZONE,
+    CONSTRAINT ck_integration_operation_status CHECK (
+        status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'MATERIALIZED', 'SUPERSEDED', 'DEAD_LETTER')
+    ),
+    CONSTRAINT ck_integration_operation_counts CHECK (
+        event_count >= 0
+        AND published_event_count >= 0
+        AND published_event_count <= event_count
+    )
+);
+
 CREATE TABLE integration_outbox (
     outbox_event_id RAW(16) PRIMARY KEY,
-    operation_id RAW(16) NOT NULL UNIQUE,
+    operation_id RAW(16) NOT NULL,
+    event_sequence NUMBER(10,0) DEFAULT 1 NOT NULL,
+    producer_service VARCHAR2(100) DEFAULT 'WURZBURG' NOT NULL,
+    delivery_channel VARCHAR2(32) DEFAULT 'INTERNAL' NOT NULL,
+    provider_id RAW(16),
+    original_event_id RAW(16),
+    delivery_generation NUMBER(10,0) DEFAULT 1 NOT NULL,
     event_type VARCHAR2(150) NOT NULL,
+    schema_version NUMBER(10,0) DEFAULT 1 NOT NULL,
     aggregate_type VARCHAR2(100) NOT NULL,
     aggregate_id RAW(16) NOT NULL,
     partition_key VARCHAR2(255) NOT NULL,
     payload_json JSON NOT NULL,
     headers_json JSON,
+    delivery_gate_snapshot_json JSON,
     status VARCHAR2(32) DEFAULT 'PENDING' NOT NULL,
     attempt_count NUMBER(10,0) DEFAULT 0 NOT NULL,
     next_attempt_at TIMESTAMP(6) WITH TIME ZONE,
     locked_by VARCHAR2(255),
     locked_until TIMESTAMP(6) WITH TIME ZONE,
     published_at TIMESTAMP(6) WITH TIME ZONE,
+    broker_partition NUMBER(10,0),
+    broker_offset NUMBER(19,0),
+    last_error_code VARCHAR2(128),
     dead_letter_reason VARCHAR2(1000),
     created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT fk_outbox_operation
+        FOREIGN KEY (operation_id) REFERENCES integration_operations(operation_id),
+    CONSTRAINT uq_outbox_operation_sequence UNIQUE (operation_id, event_sequence),
     CONSTRAINT ck_outbox_status CHECK (
-        status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'DEAD_LETTER')
-    )
+        status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'SUPPRESSED', 'DEAD_LETTER')
+    ),
+    CONSTRAINT ck_outbox_delivery_channel CHECK (
+        delivery_channel IN ('INTERNAL', 'PROVIDER')
+    ),
+    CONSTRAINT ck_outbox_event_sequence CHECK (event_sequence >= 1),
+    CONSTRAINT ck_outbox_delivery_generation CHECK (delivery_generation >= 1),
+    CONSTRAINT ck_outbox_schema_version CHECK (schema_version >= 1)
 );
 
 CREATE TABLE integration_inbox (
@@ -183,6 +226,8 @@ CREATE TABLE runtime_materialization_receipts (
     redis_key VARCHAR2(512) NOT NULL,
     materialized_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
     received_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT fk_runtime_receipt_operation
+        FOREIGN KEY (operation_id) REFERENCES integration_operations(operation_id),
     CONSTRAINT uq_runtime_receipt_operation UNIQUE (operation_id, profile_type, materialized_version),
     CONSTRAINT ck_runtime_receipt_profile CHECK (
         profile_type IN ('CPOL', 'CRCTL', 'CP', 'FEE')
@@ -207,6 +252,8 @@ CREATE INDEX idx_audit_request
     ON audit_logs(request_id, created_at, audit_log_id);
 CREATE INDEX idx_idempotency_resource ON idempotency_records(resource_type, resource_id);
 CREATE INDEX idx_operation_wal_lease ON operation_wal(status, next_attempt_at, locked_until);
+CREATE INDEX idx_integration_operation_aggregate
+    ON integration_operations(aggregate_type, aggregate_id, created_at, operation_id);
 CREATE INDEX idx_outbox_lease ON integration_outbox(status, next_attempt_at, locked_until);
 CREATE INDEX idx_inbox_aggregate ON integration_inbox(aggregate_type, aggregate_id);
 CREATE INDEX idx_kafka_poison_received ON kafka_poison_messages(received_at);

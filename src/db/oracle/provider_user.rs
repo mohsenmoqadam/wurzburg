@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
-    api::command::MutationCommandContext,
+    api::command::{DurableMutationContext, MutationCommandContext},
     db::{
         error::{DbError, DbResult},
         oracle::{
@@ -325,7 +325,7 @@ impl OracleRepository {
                         created_at: now,
                         updated_at: now,
                     };
-                    insert_enrollment_audit(connection, &context, &view)?;
+                    insert_enrollment_audit(connection, context.audit_context(), &view)?;
                     complete_idempotency_record(
                         connection,
                         &context.operation_type,
@@ -419,7 +419,7 @@ impl OracleRepository {
                             created_at: now,
                             updated_at: now,
                         };
-                        insert_enrollment_audit(connection, &context, &view)?;
+                        insert_enrollment_audit(connection, context.audit_context(), &view)?;
                         complete_idempotency_record(
                             connection,
                             &operation_type,
@@ -474,6 +474,7 @@ impl OracleRepository {
                         ensure_usage_account_mapping(connection, card.card_id, &usage)?;
                         let operation_id = Uuid::new_v4();
                         let wal_request = serde_json::json!({
+                            "command_context": context.durable(),
                             "provider_user_id": provider_user_id,
                             "provider_id": provider_id,
                             "user_id": user_id,
@@ -512,13 +513,10 @@ impl OracleRepository {
     #[tracing::instrument(skip(self, context), fields(db.system="oracle", db.operation.name="provider_users.finalize", provider_user_id=%intent.provider_user_id, operation_id=%intent.operation_id))]
     pub async fn finalize_existing_card_enrollment_atomic(
         &self,
-        context: MutationCommandContext,
+        context: DurableMutationContext,
         intent: ExistingCardProvisioningIntent,
     ) -> DbResult<ProviderUserView> {
-        let event_headers = InternalEventHeaders::from_current_span(
-            context.request.correlation_id.clone(),
-            context.request.request_id.to_string(),
-        );
+        let event_headers = context.event_headers();
         self.pool.with_transaction("finalize existing-card enrollment", move |connection| {
             let provider_user_raw = raw(intent.provider_user_id);
             let status = connection.query_row_as::<String>(
@@ -553,14 +551,15 @@ impl OracleRepository {
                 connection,
                 intent.card_id,
                 operation_id,
+                crate::domain::user_card::CardProfileRefreshReason::FundingSourceChanged,
                 &event_headers,
             )?;
             let view = fetch_provider_user_view(connection, intent.provider_user_id, intent.enrollment_id, CardResolution::ExistingCardAttached, "PENDING")?;
-            insert_enrollment_audit(connection, &context, &view)?;
+            insert_enrollment_audit(connection, context.audit.clone(), &view)?;
             complete_idempotency_record(
                 connection,
                 &context.operation_type,
-                context.idempotency_key.as_str(),
+                &context.idempotency_key,
                 "provider_user",
                 intent.provider_user_id,
                 view.replay_snapshot(),
@@ -858,13 +857,59 @@ pub(crate) fn insert_card_projection_outbox(
     connection: &oracle::Connection,
     card_id: Uuid,
     operation_id: Uuid,
+    refresh_reason: crate::domain::user_card::CardProfileRefreshReason,
     headers: &InternalEventHeaders,
 ) -> DbResult<()> {
+    super::outbox::insert_integration_operation(
+        connection,
+        operation_id,
+        "CARD_PROFILE_REFRESH",
+        "CARD",
+        card_id,
+        1,
+    )?;
+    insert_card_projection_event(
+        connection,
+        card_id,
+        operation_id,
+        1,
+        refresh_reason,
+        headers,
+    )
+}
+
+pub(crate) fn insert_card_projection_event(
+    connection: &oracle::Connection,
+    card_id: Uuid,
+    operation_id: Uuid,
+    event_sequence: u32,
+    refresh_reason: crate::domain::user_card::CardProfileRefreshReason,
+    headers: &InternalEventHeaders,
+) -> DbResult<()> {
+    let previous_operation: Option<Vec<u8>> = connection
+        .query_row_as(
+            "SELECT publication_operation_id FROM cards WHERE card_id=:1",
+            &[&raw(card_id)],
+        )
+        .map_err(|error| query("failed to load previous card-profile operation", error))?;
+    if let Some(previous_operation) = previous_operation
+        && previous_operation != raw(operation_id)
+    {
+        connection.execute(
+                "UPDATE integration_operations SET status='SUPERSEDED',completed_at=SYSTIMESTAMP,updated_at=SYSTIMESTAMP WHERE operation_id=:1 AND status IN ('PENDING','PUBLISHING','PUBLISHED')",
+                &[&previous_operation],
+            ).map_err(|error| query("failed to supersede previous card-profile operation", error))?;
+        connection.execute(
+                "UPDATE integration_outbox SET status='SUPPRESSED',last_error_code='SUPERSEDED_BY_NEWER_CARD_STATE',updated_at=SYSTIMESTAMP WHERE operation_id=:1 AND status='PENDING'",
+                &[&previous_operation],
+            ).map_err(|error| query("failed to suppress previous card-profile event", error))?;
+    }
     let event_id = Uuid::new_v4();
-    let (partition_key, projection) = load_card_profile_projection(connection, card_id)?;
+    let (partition_key, mut projection) = load_card_profile_projection(connection, card_id)?;
+    projection.refresh_reason = refresh_reason;
     let envelope = InternalEventEnvelope::new(
         event_id,
-        "CARD_PROFILE_PUBLISH_REQUESTED",
+        "CARD_PROFILE_REFRESH_REQUESTED",
         "CARD",
         card_id,
         operation_id,
@@ -875,8 +920,8 @@ pub(crate) fn insert_card_projection_outbox(
     let headers = serde_json::to_string(headers)
         .map_err(|error| DbError::Query(format!("failed to serialize event headers: {error}")))?;
     connection.execute(
-        "INSERT INTO integration_outbox (outbox_event_id,operation_id,event_type,aggregate_type,aggregate_id,partition_key,payload_json,headers_json) VALUES (:1,:2,'CARD_PROFILE_PUBLISH_REQUESTED','CARD',:3,:4,:5,:6)",
-        &[&raw(event_id), &raw(operation_id), &raw(card_id), &partition_key, &payload, &headers],
+        "INSERT INTO integration_outbox (outbox_event_id,operation_id,event_sequence,event_type,aggregate_type,aggregate_id,partition_key,payload_json,headers_json) VALUES (:1,:2,:3,'CARD_PROFILE_REFRESH_REQUESTED','CARD',:4,:5,:6,:7)",
+        &[&raw(event_id), &raw(operation_id), &i64::from(event_sequence), &raw(card_id), &partition_key, &payload, &headers],
     ).map_err(|error| query("failed to enqueue card-profile publication", error))?;
     connection
         .execute(
@@ -934,11 +979,11 @@ fn load_card_profile_projection(
             },
         });
     }
-    if funding_sources.is_empty() {
-        return Err(DbError::Conflict(
-            "active card has no active funding source".to_string(),
-        ));
-    }
+    let runtime_action = if funding_sources.is_empty() {
+        crate::domain::user_card::CardProfileRuntimeAction::Delete
+    } else {
+        crate::domain::user_card::CardProfileRuntimeAction::Upsert
+    };
     Ok((
         card.get(0).map_err(read)?,
         CardProfileProjection {
@@ -947,6 +992,8 @@ fn load_card_profile_projection(
             card_range_id: raw16_to_uuid(&range_raw)?,
             funding_mode: card.get(3).map_err(read)?,
             state_version: card.get(4).map_err(read)?,
+            runtime_action,
+            refresh_reason: crate::domain::user_card::CardProfileRefreshReason::Recovery,
             policy_usage_accounts: usage,
             funding_sources,
         },
@@ -960,7 +1007,7 @@ fn row_uuid(row: &oracle::Row, index: usize) -> DbResult<Uuid> {
 
 fn insert_enrollment_audit(
     connection: &oracle::Connection,
-    context: &MutationCommandContext,
+    audit_context: crate::domain::audit::TrustedAuditContext,
     view: &ProviderUserView,
 ) -> DbResult<()> {
     insert_audit_log(
@@ -973,7 +1020,7 @@ fn insert_enrollment_audit(
             reason: Some("Provider asserted customer enrollment and card selection".to_string()),
             old_values: None,
             new_values: Some(view.replay_snapshot()),
-            context: context.audit_context(),
+            context: audit_context,
         },
     )
 }
@@ -1019,7 +1066,7 @@ fn classify_idempotency(
     })
 }
 
-fn resume_provider_user_intent(
+pub(crate) fn resume_provider_user_intent(
     connection: &oracle::Connection,
     provider_user_id: Uuid,
 ) -> DbResult<Option<ExistingCardProvisioningIntent>> {

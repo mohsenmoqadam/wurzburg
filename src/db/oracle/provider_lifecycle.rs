@@ -19,6 +19,7 @@ use crate::{
         audit::{AuditAction, NewAuditLog},
         idempotency::IdempotencyStatus,
         provider::{Provider, ProviderStatus},
+        user_card::CardProfileRefreshReason,
     },
     messaging::contract::InternalEventHeaders,
 };
@@ -30,7 +31,6 @@ pub enum ProviderLifecycleOutcome {
     NotFound,
     InvalidTransition,
     PrerequisitesMissing,
-    PublicationPending,
     IdempotencyConflict,
     IdempotencyInProgress,
     IdempotencyInvalidState,
@@ -52,7 +52,7 @@ impl OracleRepository {
         let operation_type = context.operation_type.clone();
         let idempotency_key = context.idempotency_key.as_str().to_string();
         let request_hash = context.request_hash.clone();
-        let result = self.pool.with_transaction("provider lifecycle transition", move |connection| {
+        self.pool.with_transaction("provider lifecycle transition", move |connection| {
             if let Some(existing) = fetch_idempotency_record(connection, &operation_type, &idempotency_key)? {
                 return classify_idempotency(&existing, &request_hash);
             }
@@ -81,10 +81,17 @@ impl OracleRepository {
                 }
             }
 
-            let active_range = if matches!(target, ProviderStatus::Suspended | ProviderStatus::Inactive) {
+            let relationship_status = if matches!(target, ProviderStatus::Suspended | ProviderStatus::Inactive) {
+                Some(("ACTIVE", "SUSPENDED"))
+            } else if current == ProviderStatus::Suspended && target == ProviderStatus::Active {
+                Some(("SUSPENDED", "ACTIVE"))
+            } else {
+                None
+            };
+            let affected_range = if let Some((current_relationship_status, _)) = relationship_status {
                 let mut relation_rows = connection.query(
-                    "SELECT card_range_id FROM card_range_providers WHERE provider_id=:1 AND status='ACTIVE' FOR UPDATE",
-                    &[&uuid_to_raw16(provider_id).to_vec()],
+                    "SELECT card_range_id FROM card_range_providers WHERE provider_id=:1 AND status=:2 FOR UPDATE",
+                    &[&uuid_to_raw16(provider_id).to_vec(), &current_relationship_status],
                 ).map_err(|error| DbError::Query(format!("failed to lock provider range lifecycle: {error}")))?;
                 match relation_rows.next() {
                     Some(Ok(row)) => {
@@ -102,10 +109,10 @@ impl OracleRepository {
                 &[&target.as_db_value(), &context.actor.subject, &uuid_to_raw16(provider_id).to_vec()],
             ).map_err(|error| DbError::Query(format!("failed to transition provider lifecycle: {error}")))?;
 
-            if let Some(card_range_id) = active_range {
+            if let (Some(card_range_id), Some((current_relationship_status, next_relationship_status))) = (affected_range, relationship_status) {
                 let range_raw = uuid_to_raw16(card_range_id).to_vec();
                 let mut range_rows = connection.query(
-                    "SELECT status,issuance_enabled,cms_operation_mode,operational_version,materialized_operational_version FROM card_ranges WHERE card_range_id=:1 FOR UPDATE",
+                    "SELECT status,issuance_enabled,cms_operation_mode,operational_version FROM card_ranges WHERE card_range_id=:1 FOR UPDATE",
                     &[&range_raw],
                 ).map_err(|error| DbError::Query(format!("failed to lock affected provider range: {error}")))?;
                 let range_row = range_rows.next().ok_or_else(|| DbError::Query("provider range relationship points to missing range".to_string()))?
@@ -114,14 +121,10 @@ impl OracleRepository {
                 let issuance_enabled: i32 = range_row.get(1).map_err(read_error)?;
                 let cms_mode: String = range_row.get(2).map_err(read_error)?;
                 let version: i64 = range_row.get(3).map_err(read_error)?;
-                let materialized: i64 = range_row.get(4).map_err(read_error)?;
-                if version != materialized {
-                    return Err(DbError::Conflict("provider range publication pending".to_string()));
-                }
                 connection.execute(
-                    "UPDATE card_range_providers SET status='SUSPENDED',updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE provider_id=:2 AND card_range_id=:3 AND status='ACTIVE'",
-                    &[&context.actor.subject, &uuid_to_raw16(provider_id).to_vec(), &range_raw],
-                ).map_err(|error| DbError::Query(format!("failed to suspend provider range eligibility: {error}")))?;
+                    "UPDATE card_range_providers SET status=:1,updated_by_subject=:2,updated_at=SYSTIMESTAMP WHERE provider_id=:3 AND card_range_id=:4 AND status=:5",
+                    &[&next_relationship_status, &context.actor.subject, &uuid_to_raw16(provider_id).to_vec(), &range_raw, &current_relationship_status],
+                ).map_err(|error| DbError::Query(format!("failed to transition provider range eligibility: {error}")))?;
                 let remaining: i64 = connection.query_row_as(
                     "SELECT COUNT(*) FROM card_range_providers WHERE card_range_id=:1 AND status='ACTIVE'",
                     &[&range_raw],
@@ -147,6 +150,16 @@ impl OracleRepository {
                 )?;
             }
 
+            propagate_provider_funding_status(
+                connection,
+                &context,
+                provider_id,
+                current,
+                target,
+                &reason,
+                &event_headers,
+            )?;
+
             let provider = super::provider::fetch_provider_for_command(connection, provider_id)?;
             let snapshot = provider.replay_snapshot();
             insert_audit_log(connection, NewAuditLog {
@@ -156,14 +169,83 @@ impl OracleRepository {
             })?;
             complete_idempotency_record(connection, &operation_type, &idempotency_key, "provider", provider_id, snapshot)?;
             Ok(ProviderLifecycleOutcome::Applied(Box::new(provider)))
-        }).await;
-        match result {
-            Err(DbError::Conflict(message)) if message == "provider range publication pending" => {
-                Ok(ProviderLifecycleOutcome::PublicationPending)
-            }
-            other => other,
+        }).await
+    }
+}
+
+fn propagate_provider_funding_status(
+    connection: &oracle::Connection,
+    context: &MutationCommandContext,
+    provider_id: Uuid,
+    current: ProviderStatus,
+    target: ProviderStatus,
+    reason: &str,
+    headers: &InternalEventHeaders,
+) -> DbResult<()> {
+    let transition = if matches!(target, ProviderStatus::Suspended | ProviderStatus::Inactive) {
+        Some(("ACTIVE", "SUSPENDED"))
+    } else if current == ProviderStatus::Suspended && target == ProviderStatus::Active {
+        Some(("SUSPENDED", "ACTIVE"))
+    } else {
+        None
+    };
+    let Some((current_status, next_status)) = transition else {
+        return Ok(());
+    };
+    let rows = connection.query(
+        "SELECT fs.card_funding_source_id,fs.card_id,c.status FROM card_provider_funding_sources fs JOIN cards c ON c.card_id=fs.card_id WHERE fs.provider_id=:1 AND fs.status=:2 ORDER BY fs.card_id FOR UPDATE",
+        &[&uuid_to_raw16(provider_id).to_vec(), &current_status],
+    ).map_err(|error| DbError::Query(format!("failed to lock provider funding sources: {error}")))?;
+    let mut funding_sources = Vec::new();
+    for row in rows {
+        let row = row.map_err(|error| {
+            DbError::Query(format!("failed to read provider funding source: {error}"))
+        })?;
+        let source_raw: Vec<u8> = row.get(0).map_err(read_error)?;
+        let card_raw: Vec<u8> = row.get(1).map_err(read_error)?;
+        funding_sources.push((
+            raw16_to_uuid(&source_raw)?,
+            raw16_to_uuid(&card_raw)?,
+            row.get::<_, String>(2).map_err(read_error)?,
+        ));
+    }
+    for (source_id, card_id, card_status) in funding_sources {
+        connection.execute(
+            "UPDATE card_provider_funding_sources SET status=:1,updated_by_subject=:2,updated_at=SYSTIMESTAMP WHERE card_funding_source_id=:3 AND status=:4",
+            &[&next_status, &context.actor.subject, &uuid_to_raw16(source_id).to_vec(), &current_status],
+        ).map_err(|error| DbError::Query(format!("failed to transition provider funding source: {error}")))?;
+        insert_audit_log(
+            connection,
+            NewAuditLog {
+                audit_log_id: Uuid::new_v4(),
+                entity_type: "CARD_FUNDING_SOURCE".to_string(),
+                entity_id: source_id,
+                action_type: AuditAction::StateTransition,
+                reason: Some(reason.to_string()),
+                old_values: Some(
+                    serde_json::json!({"provider_id":provider_id,"card_id":card_id,"status":current_status}),
+                ),
+                new_values: Some(
+                    serde_json::json!({"provider_id":provider_id,"card_id":card_id,"status":next_status}),
+                ),
+                context: context.audit_context(),
+            },
+        )?;
+        if card_status == "ACTIVE" {
+            connection.execute(
+                "UPDATE cards SET state_version=state_version+1,updated_by_subject=:1,updated_at=SYSTIMESTAMP WHERE card_id=:2 AND status='ACTIVE'",
+                &[&context.actor.subject, &uuid_to_raw16(card_id).to_vec()],
+            ).map_err(|error| DbError::Query(format!("failed to advance provider-affected card version: {error}")))?;
+            super::provider_user::insert_card_projection_outbox(
+                connection,
+                card_id,
+                Uuid::new_v4(),
+                CardProfileRefreshReason::ProviderStatusChanged,
+                headers,
+            )?;
         }
     }
+    Ok(())
 }
 
 fn classify_idempotency(

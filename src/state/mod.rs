@@ -8,6 +8,7 @@ use crate::db::oracle::{OracleHealthRepository, OracleRepository};
 use crate::ledger::{LedgerClient, LedgerWorkerHandle};
 use crate::messaging::{MessageBrokerAdmin, MessageProducer};
 use crate::object_storage::ObjectStorage;
+use crate::runtime_profiles::{CardProfileLockManager, ProviderCreditLockManager};
 use crate::security::provider_kafka_cipher::ProviderKafkaCredentialFactory;
 
 /// Immutable dependency container shared by HTTP handlers and background
@@ -18,6 +19,8 @@ pub struct AppState {
     pub db: Arc<OracleRepository>,
     pub oracle_health: Option<OracleHealthRepository>,
     pub redis: RedisPool,
+    pub card_profile_locks: Arc<CardProfileLockManager>,
+    pub provider_credit_locks: Arc<ProviderCreditLockManager>,
     pub message_producer: MessageProducer,
     pub message_broker_admin: MessageBrokerAdmin,
     pub ledger_client: LedgerClient,

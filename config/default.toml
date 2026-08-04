@@ -53,6 +53,12 @@ pool_max_open = 10
 connection_timeout_ms = 3000
 response_timeout_ms = 2000
 
+[card_profile_lock]
+coordinator_enabled = true
+coordinator_batch_size = 200
+lease_duration_ms = 45000
+renew_interval_ms = 15000
+
 [kafka]
 bootstrap_servers = "localhost:9093"
 security_protocol = "SASL_SSL"
@@ -120,6 +126,17 @@ worker_id = "wurzburg-provider-core-provisioning"
 batch_size = 10
 poll_interval_ms = 500
 lease_duration_ms = 30000
+max_attempts = 20
+initial_backoff_ms = 500
+max_backoff_ms = 60000
+
+[wal_recovery]
+enabled = true
+worker_id = "wurzburg-financial-wal-recovery"
+batch_size = 20
+poll_interval_ms = 1000
+lease_duration_ms = 30000
+stale_after_ms = 120000
 max_attempts = 20
 initial_backoff_ms = 500
 max_backoff_ms = 60000

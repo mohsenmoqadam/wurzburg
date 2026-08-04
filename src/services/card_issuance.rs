@@ -333,7 +333,7 @@ impl CardIssuanceService {
                         ));
                     }
                     self.repository
-                        .finalize_issued_card_atomic(context, &intent, &row)
+                        .finalize_issued_card_atomic(&context.durable(), &intent, &row)
                         .await
                         .map_err(ApiError::from_database)?;
                 }
@@ -341,7 +341,7 @@ impl CardIssuanceService {
         }
         let completed = self
             .repository
-            .complete_card_issuance_result_atomic(context, batch_id)
+            .complete_card_issuance_result_atomic(&context.durable(), batch_id)
             .await
             .map_err(ApiError::from_database)?;
         Ok(CreateCardIssuanceBatchOutcome::Created(completed))

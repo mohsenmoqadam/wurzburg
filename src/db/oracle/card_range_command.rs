@@ -414,6 +414,14 @@ fn insert_control_outbox(
     operation_id: Uuid,
     headers: &InternalEventHeaders,
 ) -> DbResult<()> {
+    super::outbox::insert_integration_operation(
+        connection,
+        operation_id,
+        "CARD_RANGE_CONTROL_PUBLISH",
+        "CARD_RANGE",
+        range.card_range_id,
+        1,
+    )?;
     let provider_rows = connection.query("SELECT provider_id FROM card_range_providers WHERE card_range_id=:1 AND status='ACTIVE' ORDER BY provider_id", &[&uuid_to_raw16(range.card_range_id).to_vec()]).map_err(|error| DbError::Query(format!("failed to list eligible providers: {error}")))?;
     let mut providers = Vec::new();
     for row in provider_rows {

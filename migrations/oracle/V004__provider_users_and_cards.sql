@@ -82,6 +82,10 @@ CREATE TABLE cards (
     updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT fk_cards_user FOREIGN KEY (user_id) REFERENCES users(user_id),
     CONSTRAINT fk_cards_range FOREIGN KEY (card_range_id) REFERENCES card_ranges(card_range_id),
+    CONSTRAINT fk_cards_publication_operation
+        FOREIGN KEY (publication_operation_id)
+        REFERENCES integration_operations(operation_id)
+        DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT ck_cards_status CHECK (
         status IN ('PROVISIONING', 'ACTIVE', 'SUSPENDED', 'REPLACED', 'EXPIRED', 'RECOVERY_REQUIRED')
     ),
@@ -151,6 +155,134 @@ CREATE UNIQUE INDEX uq_cpfs_account_one_active_card
         CASE WHEN status = 'ACTIVE' THEN provider_user_account_id END
     );
 
+CREATE TABLE provider_credit_movements (
+    movement_id RAW(16) PRIMARY KEY,
+    operation_id RAW(16) NOT NULL UNIQUE,
+    movement_type VARCHAR2(32) NOT NULL,
+    initiated_by VARCHAR2(32) NOT NULL,
+    provider_id RAW(16) NOT NULL,
+    user_id RAW(16) NOT NULL,
+    card_id RAW(16) NOT NULL,
+    provider_user_account_id RAW(16) NOT NULL,
+    provider_owned_account_id RAW(16) NOT NULL,
+    amount_rials NUMBER(38,0) NOT NULL,
+    expected_remaining_amount_rials NUMBER(38,0),
+    provider_reference VARCHAR2(255),
+    deterministic_transfer_id RAW(16) NOT NULL UNIQUE,
+    status VARCHAR2(32) DEFAULT 'PENDING' NOT NULL,
+    card_state_version NUMBER(19,0),
+    reason VARCHAR2(1000),
+    metadata_json JSON DEFAULT '{}' NOT NULL,
+    safe_error_code VARCHAR2(128),
+    created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    updated_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT fk_pcm_operation FOREIGN KEY (operation_id) REFERENCES operation_wal(operation_id),
+    CONSTRAINT fk_pcm_provider FOREIGN KEY (provider_id) REFERENCES providers(provider_id),
+    CONSTRAINT fk_pcm_user FOREIGN KEY (user_id) REFERENCES users(user_id),
+    CONSTRAINT fk_pcm_card FOREIGN KEY (card_id) REFERENCES cards(card_id),
+    CONSTRAINT fk_pcm_user_account FOREIGN KEY (provider_user_account_id) REFERENCES provider_user_accounts(provider_user_account_id),
+    CONSTRAINT ck_pcm_type CHECK (movement_type IN ('GRANT', 'RETURN_FULL_BALANCE')),
+    CONSTRAINT ck_pcm_initiator CHECK (initiated_by IN ('PROVIDER', 'CARDHOLDER')),
+    CONSTRAINT ck_pcm_status CHECK (status IN ('PENDING', 'APPLIED', 'FAILED', 'RECOVERY_REQUIRED')),
+    CONSTRAINT ck_pcm_amount CHECK (amount_rials > 0),
+    CONSTRAINT ck_pcm_expected CHECK (
+        (movement_type = 'GRANT' AND expected_remaining_amount_rials IS NULL)
+        OR
+        (movement_type = 'RETURN_FULL_BALANCE' AND expected_remaining_amount_rials = amount_rials)
+    )
+);
+
+CREATE UNIQUE INDEX uq_pcm_provider_reference
+    ON provider_credit_movements (
+        CASE WHEN provider_reference IS NOT NULL THEN provider_id END,
+        CASE WHEN provider_reference IS NOT NULL THEN provider_reference END
+    );
+
+CREATE INDEX idx_pcm_card_created
+    ON provider_credit_movements(card_id, created_at, movement_id);
+
+CREATE INDEX idx_pcm_provider_created
+    ON provider_credit_movements(provider_id, created_at, movement_id);
+
+-- Financial transactions are immutable reporting facts, not a balance cache.
+-- Wurzburg writes provider-credit facts atomically with movement finalization;
+-- Wolfsburg writes verified Nuremberg Confirm/Rollback facts using this same
+-- header-and-entry contract so multi-provider visibility remains entry-scoped.
+CREATE TABLE financial_transactions (
+    transaction_id RAW(16) PRIMARY KEY,
+    transaction_type VARCHAR2(40) NOT NULL,
+    source_system VARCHAR2(16) NOT NULL,
+    source_operation_id RAW(16),
+    source_event_id RAW(16),
+    user_id RAW(16) NOT NULL,
+    card_id RAW(16) NOT NULL,
+    amount_rials NUMBER(38,0) NOT NULL,
+    currency VARCHAR2(3) DEFAULT 'IRR' NOT NULL,
+    status VARCHAR2(24) DEFAULT 'POSTED' NOT NULL,
+    external_reference VARCHAR2(255),
+    original_transaction_id RAW(16),
+    metadata_json JSON DEFAULT '{}' NOT NULL,
+    occurred_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    recorded_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT fk_ft_user FOREIGN KEY (user_id) REFERENCES users(user_id),
+    CONSTRAINT fk_ft_card FOREIGN KEY (card_id) REFERENCES cards(card_id),
+    CONSTRAINT fk_ft_original FOREIGN KEY (original_transaction_id) REFERENCES financial_transactions(transaction_id),
+    CONSTRAINT uq_ft_source_operation UNIQUE (source_system, source_operation_id),
+    CONSTRAINT uq_ft_source_event UNIQUE (source_system, source_event_id),
+    CONSTRAINT ck_ft_type CHECK (transaction_type IN (
+        'CREDIT_GRANTED', 'CREDIT_RETURNED', 'WITHDRAWAL_CONFIRMED',
+        'WITHDRAWAL_ROLLED_BACK', 'FEE_CHARGED'
+    )),
+    CONSTRAINT ck_ft_source CHECK (source_system IN ('WURZBURG', 'WOLFSBURG')),
+    CONSTRAINT ck_ft_status CHECK (status IN ('POSTED', 'REVERSED')),
+    CONSTRAINT ck_ft_amount CHECK (amount_rials > 0),
+    CONSTRAINT ck_ft_currency CHECK (currency = 'IRR'),
+    CONSTRAINT ck_ft_source_identity CHECK (
+        (source_system = 'WURZBURG' AND source_operation_id IS NOT NULL AND source_event_id IS NULL)
+        OR
+        (source_system = 'WOLFSBURG' AND source_event_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX idx_ft_card_time
+    ON financial_transactions(card_id, occurred_at DESC, transaction_id DESC);
+
+CREATE INDEX idx_ft_user_time
+    ON financial_transactions(user_id, occurred_at DESC, transaction_id DESC);
+
+CREATE INDEX idx_ft_type_time
+    ON financial_transactions(transaction_type, occurred_at DESC, transaction_id DESC);
+
+CREATE TABLE financial_transaction_entries (
+    transaction_entry_id RAW(16) PRIMARY KEY,
+    transaction_id RAW(16) NOT NULL,
+    entry_sequence NUMBER(5,0) NOT NULL,
+    provider_id RAW(16) NOT NULL,
+    account_id RAW(16) NOT NULL,
+    account_category VARCHAR2(32) NOT NULL,
+    direction VARCHAR2(8) NOT NULL,
+    entry_role VARCHAR2(16) NOT NULL,
+    amount_rials NUMBER(38,0) NOT NULL,
+    tigerbeetle_transfer_id RAW(16) NOT NULL,
+    created_at TIMESTAMP(6) WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+    CONSTRAINT fk_fte_transaction FOREIGN KEY (transaction_id) REFERENCES financial_transactions(transaction_id),
+    CONSTRAINT fk_fte_provider FOREIGN KEY (provider_id) REFERENCES providers(provider_id),
+    CONSTRAINT uq_fte_sequence UNIQUE (transaction_id, entry_sequence),
+    CONSTRAINT ck_fte_sequence CHECK (entry_sequence BETWEEN 1 AND 65535),
+    CONSTRAINT ck_fte_category CHECK (account_category IN (
+        'PROVIDER_OWNED', 'PROVIDER_FEE', 'CMS_SETTLEMENT', 'PLATFORM_FEE', 'PROVIDER_USER'
+    )),
+    CONSTRAINT ck_fte_direction CHECK (direction IN ('DEBIT', 'CREDIT')),
+    CONSTRAINT ck_fte_role CHECK (entry_role IN ('PRINCIPAL', 'FEE')),
+    CONSTRAINT ck_fte_amount CHECK (amount_rials > 0)
+);
+
+CREATE INDEX idx_fte_provider_transaction
+    ON financial_transaction_entries(provider_id, transaction_id, account_category);
+
+CREATE INDEX idx_fte_account_time
+    ON financial_transaction_entries(account_id, transaction_id);
+
 CREATE TABLE card_issuance_batches (
     card_issuance_batch_id RAW(16) PRIMARY KEY,
     status VARCHAR2(32) NOT NULL,
@@ -158,6 +290,7 @@ CREATE TABLE card_issuance_batches (
     request_checksum_sha256 VARCHAR2(64),
     result_object_key VARCHAR2(1000),
     result_checksum_sha256 VARCHAR2(64),
+    result_command_context_json JSON,
     request_count NUMBER(10,0) DEFAULT 0 NOT NULL,
     issued_count NUMBER(10,0) DEFAULT 0 NOT NULL,
     rejected_count NUMBER(10,0) DEFAULT 0 NOT NULL,

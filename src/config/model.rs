@@ -9,6 +9,7 @@ pub struct Settings {
     pub migrations: MigrationConfig,
     pub wso2: Wso2Config,
     pub redis: RedisConfig,
+    pub card_profile_lock: CardProfileLockConfig,
     pub telemetry: TelemetryConfig,
     pub kafka: KafkaConfig,
     pub validation: ValidationConfig,
@@ -16,6 +17,7 @@ pub struct Settings {
     pub provider_core_provisioning: ProviderCoreProvisioningConfig,
     pub provider_kafka_access: ProviderKafkaAccessConfig,
     pub provider_operational_profile_scheduler: ProviderOperationalProfileSchedulerConfig,
+    pub wal_recovery: WalRecoveryConfig,
     pub object_storage: ObjectStorageConfig,
 }
 
@@ -117,6 +119,24 @@ impl RedisConfig {
 
     pub fn response_timeout(&self) -> Duration {
         Duration::from_millis(self.response_timeout_ms)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CardProfileLockConfig {
+    pub coordinator_enabled: bool,
+    pub coordinator_batch_size: u16,
+    pub lease_duration_ms: u64,
+    pub renew_interval_ms: u64,
+}
+
+impl CardProfileLockConfig {
+    pub fn lease_duration(&self) -> Duration {
+        Duration::from_millis(self.lease_duration_ms)
+    }
+
+    pub fn renew_interval(&self) -> Duration {
+        Duration::from_millis(self.renew_interval_ms)
     }
 }
 
@@ -283,6 +303,25 @@ pub struct ProviderCoreProvisioningConfig {
 }
 
 impl ProviderCoreProvisioningConfig {
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct WalRecoveryConfig {
+    pub enabled: bool,
+    pub worker_id: String,
+    pub batch_size: u16,
+    pub poll_interval_ms: u64,
+    pub lease_duration_ms: u64,
+    pub stale_after_ms: u64,
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+impl WalRecoveryConfig {
     pub fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms)
     }

@@ -1,2 +1,6 @@
 cargo run --quiet --bin get-wurzburg-dev-jwt
 docker exec -it wurzburg_redis redis-cli
+
+
+make APP_ENVIRONMENT=test dev-reset
+APP_ENVIRONMENT=test RUN_FULL_INTEGRATION_TESTS=1 cargo test --all-targets --jobs 4

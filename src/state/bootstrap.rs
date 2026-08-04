@@ -9,6 +9,7 @@ use crate::db::oracle::{
 use crate::ledger::{LedgerClient, start_ledger_worker};
 use crate::messaging::{MessageBrokerAdmin, MessageProducer};
 use crate::object_storage::ObjectStorage;
+use crate::runtime_profiles::{CardProfileLockManager, ProviderCreditLockManager};
 use crate::security::provider_kafka_cipher::ProviderKafkaCredentialFactory;
 
 use super::AppState;
@@ -32,6 +33,14 @@ impl AppState {
         let redis = redis_config
             .create_pool(Some(Runtime::Tokio1))
             .context("Failed to create Redis pool")?;
+        let card_profile_locks = Arc::new(CardProfileLockManager::new(
+            redis.clone(),
+            config.card_profile_lock.clone(),
+        ));
+        let provider_credit_locks = Arc::new(ProviderCreditLockManager::new(
+            redis.clone(),
+            config.card_profile_lock.clone(),
+        ));
 
         let message_producer = MessageProducer::new(&config.kafka)?;
         let message_broker_admin = MessageBrokerAdmin::new(&config.kafka)?;
@@ -62,6 +71,8 @@ impl AppState {
             db,
             oracle_health: Some(oracle_health),
             redis,
+            card_profile_locks,
+            provider_credit_locks,
             message_producer,
             message_broker_admin,
             ledger_client,

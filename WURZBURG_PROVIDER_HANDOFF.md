@@ -223,6 +223,15 @@ Lifecycle enforcement:
   provider from new Balance/Confirm funding decisions; other eligible providers
   remain usable. Rollback continues from immutable FundingPlan facts unless a
   range-level CMS control blocks the external operation.
+- Provider suspension/inactivation atomically suspends its active range
+  eligibility and every active card funding source. Reactivation restores those
+  relationship rows to `ACTIVE`; it never deletes account, card, audit, or
+  financial history. If the provider was the final active provider, the range
+  remains administratively `SUSPENDED` until an explicit range activation.
+- Each affected active card advances `state_version` and receives a
+  `CARD_PROFILE_REFRESH_REQUESTED(PROVIDER_STATUS_CHANGED)` command in the same
+  Oracle transaction. A card with no remaining active source uses runtime action
+  `DELETE`; otherwise it uses `UPSERT` with only active sources.
 - Independent operational-profile switches control capabilities while status is
   ACTIVE. Disabling one capability does not imply provider suspension.
 - `SUSPENDED` and `INACTIVE` may transition back to ACTIVE through the normal
@@ -1465,12 +1474,74 @@ matching live balance read from TigerBeetle under the card lock. Cardholder
 returns do not require a provider reference; their uniqueness comes from the
 idempotency record and operation ID.
 
+### Canonical Financial Transaction Read Model
+
+`financial_transactions` and `financial_transaction_entries` are immutable
+reporting facts, never a money-balance cache. A header represents one business
+transaction. Its ordered entries represent the actual provider/account legs,
+which is required because one multi-provider Confirm can debit several
+provider-user accounts and credit several provider CMS settlement accounts.
+
+Wurzburg inserts `CREDIT_GRANTED` and `CREDIT_RETURNED` headers and their two
+double-entry facts in the same Oracle transaction that marks the movement
+`APPLIED`. Wolfsburg inserts `WITHDRAWAL_CONFIRMED`,
+`WITHDRAWAL_ROLLED_BACK`, and `FEE_CHARGED` only after it has verified the
+Nuremberg/TigerBeetle result. Pending WAL or unverified Kafka facts never appear
+in transaction history.
+
+Provider visibility is enforced on entries, not only the transaction header. A
+Provider querying a multi-provider Confirm receives only entries whose
+`provider_id` matches its trusted WSO2 claim. A cardholder owning the card and a
+platform-admin/support/reporting caller receive the complete entry set allowed
+by their route and scope. Provider references are omitted from cardholder
+responses. PAN is always masked.
+
+The transaction tables store immutable transaction evidence and TigerBeetle
+account/transfer identifiers for reconciliation. They never store debit,
+credit, available-balance, or current-balance values. Every live balance still
+comes only from TigerBeetle.
+
+### integration_operations
+
+`integration_operations` is the durable parent of an asynchronous business
+operation. It owns aggregate identity and monotonic publication/materialization
+state independently of any one Kafka record. One operation may therefore emit
+multiple ordered internal and provider-facing events without overloading an
+outbox row as the operation record.
+
+```text
+integration_operations
+- operation_id RAW(16) primary key
+- operation_type VARCHAR2(150) not null
+- aggregate_type VARCHAR2(100) not null
+- aggregate_id RAW(16) not null
+- status PENDING | PUBLISHING | PUBLISHED | MATERIALIZED | SUPERSEDED |
+  DEAD_LETTER
+- event_count NUMBER(10,0) not null
+- published_event_count NUMBER(10,0) not null
+- materialized_at TIMESTAMP WITH TIME ZONE nullable
+- safe_error_code VARCHAR2(128) nullable
+- created_at TIMESTAMP WITH TIME ZONE not null
+- updated_at TIMESTAMP WITH TIME ZONE not null
+- completed_at TIMESTAMP WITH TIME ZONE nullable
+```
+
+Status transitions are monotonic. A valid Wolfsburg materialization receipt is
+stronger evidence than a local producer callback and may move an operation
+directly from `PENDING` or `PUBLISHING` to `MATERIALIZED`. A late producer
+callback updates counters but must never regress `MATERIALIZED` to `PUBLISHED`.
+For card profiles, a newer committed `state_version` supersedes any previous
+pending operation. Wurzburg marks the old operation `SUPERSEDED`, suppresses its
+still-pending outbox row, and makes the newest operation the only acceptable
+receipt target. This latest-wins rule prevents lifecycle controls and newer
+funding preferences from being blocked behind stale projection work.
+
 ### integration_outbox
 
 ```text
 integration_outbox
 - outbox_event_id RAW(16) primary key
-- operation_id RAW(16) nullable
+- operation_id RAW(16) not null references integration_operations
 - producer_service WURZBURG | WOLFSBURG
 - delivery_channel INTERNAL | PROVIDER
 - provider_id RAW(16) nullable
@@ -1667,20 +1738,24 @@ Lock rules:
   performs no business mutation.
 - Wurzburg releases its own lock with token-safe compare-and-delete only when
   the command fails before any durable business effect.
-- After final validation and while holding the lock, Wurzburg deletes CP before
-  applying the CP-affecting Oracle/TigerBeetle mutation. This guarantees that a
-  stale CP cannot survive a successful mutation.
-- If CP invalidation fails, Wurzburg performs no business mutation and returns
-  `503`.
-- If CP was deleted but a later Oracle/TigerBeetle step fails without applying
-  the intended business change, Wurzburg records the failure, enqueues a
-  `CARD_PROFILE_REFRESH_REQUESTED` event with reason `MUTATION_ABORTED`, and
-  leaves the lock for Wolfsburg to restore current CP safely.
+- After final validation and while holding the lock, Wurzburg commits the
+  CP-affecting Oracle mutation and its refresh operation/outbox event atomically,
+  then deletes the stale CP before returning success. Nuremberg observes the
+  lock throughout this interval and therefore cannot consume the stale value.
+- If CP invalidation fails after the Oracle commit, Wurzburg returns `503`,
+  leaves the lock, and relies on the already-durable refresh event/recovery path.
+  An idempotent retry observes the original committed command rather than
+  repeating the mutation.
+- A definitive business rejection releases the lock with compare-and-delete and
+  does not invalidate CP.
 - After a durable CP-affecting effect, Wurzburg leaves the lock for Wolfsburg.
 - Wolfsburg writes a fresh versioned CP and then releases the matching lock.
 - Lock deletion must verify the operation/token; unconditional `DEL` is not
   allowed.
-- The outbox/recovery worker renews the lock lease while publication is pending.
+- The card-profile coordinator continuously discovers cards with a pending
+  publication operation, acquires or renews that exact operation token, and
+  atomically removes any stale CP value. This also repairs locks and CP
+  invalidation after a Wurzburg restart.
 - If a lease nevertheless expires, CP remains absent. Wolfsburg uses
   `card_state_version` to prevent an older event from overwriting newer state.
 
@@ -1713,22 +1788,21 @@ The recovery responsibilities remain separated:
   and recovery state.
 - staged onboarding rows or `provider_credit_movements` own domain facts.
 - `integration_outbox` owns at-least-once internal/provider event publication.
-- `runtime_materialization_receipts` proves Wolfsburg published the required
-  Redis state.
+- `runtime_materialization_receipts` proves Wolfsburg materialized the required
+  Dragonfly state.
 
 WAL state progression:
 
 ```text
-INTENT_RECORDED
-  -> EXTERNAL_EFFECT_SUBMITTING
-  -> EVENT_PENDING
+PENDING
+  -> EXTERNAL_IN_FLIGHT
+  -> EXTERNAL_VERIFIED
   -> COMPLETED
 
-INTENT_RECORDED/EXTERNAL_EFFECT_SUBMITTING
-  -> FAILED_BEFORE_EXTERNAL_EFFECT
+PENDING/EXTERNAL_IN_FLIGHT/EXTERNAL_VERIFIED
+  -> FAILED -> retry with the same deterministic effect ID
 
-INTENT_RECORDED/EXTERNAL_EFFECT_SUBMITTING
-  -> RECOVERY_REQUIRED
+FAILED -> DEAD_LETTER after bounded attempts and operator visibility
 ```
 
 `RECOVERY_REQUIRED` is used only when Wurzburg cannot yet prove whether the
@@ -1737,29 +1811,29 @@ generic business failure.
 
 #### Credit Grant And Return Protocol
 
-1. Claim `Idempotency-Key` and compare the canonical request hash. Allocate one
-   immutable `operation_id`, `movement_id`, TigerBeetle `transfer_id`, internal
-   refresh `event_id`, and provider event ID deterministically from the command.
+1. Check `Idempotency-Key` and compare the canonical request hash. Allocate one
+   immutable `operation_id` and `movement_id`; derive the TigerBeetle
+   `transfer_id` deterministically from `operation_id`. Outbox event IDs are
+   allocated once during finalization and remain immutable across retries.
 2. Validate the trusted actor, provider/card/user relationship, lifecycle,
    operational profile, and command shape without mutating business state.
-3. If the provider-user account is behind an active card funding source,
-   acquire `Lock-CP:{card_number}`. If unavailable, return the documented
-   conflict before creating a WAL intent. A provider may return stranded credit
-   after eligibility/card detachment; when no active CP can reference the
-   account, no card lock or CP refresh is required.
-4. Read the provider-user and provider-owned TigerBeetle accounts while holding
-   the lock. Grant validates the selected exposure mode. Full-balance return
+3. Acquire `Lock-Provider-Credit:{provider_id}` and then
+   `Lock-CP:{card_number}`. This fixed order serializes provider exposure and
+   exact-card spendability without deadlock. If either lock is unavailable,
+   return the documented conflict before creating a WAL intent. This API slice
+   operates only on an active relationship and active card funding source;
+   detached-credit recovery is an explicit operator workflow.
+4. Read and verify the provider-user, provider-owned, and when required CMS
+   settlement TigerBeetle account contracts while holding both locks. Grant
+   validates the selected exposure mode. Full-balance return
    validates that the live spendable balance is positive and exactly equals
    `expected_remaining_amount_rials`; arbitrary/partial amounts are rejected.
 5. In Oracle transaction A, insert `operation_wal(INTENT_RECORDED)`, insert the
    pending immutable movement, and bind the idempotency record to the operation.
-6. For an active card funding source, delete stale `CP:{card_number}`. A
-   definitive invalidation failure before deletion marks the WAL/movement failed
-   and returns `503`. After successful deletion, any definitive pre-ledger
-   failure atomically marks the command failed and inserts
-   `CARD_PROFILE_REFRESH_REQUESTED(MUTATION_ABORTED)`; the lock remains until
-   Wolfsburg restores current CP. A crash in this window is resolved from the
-   WAL in the same way. Skip this step when no active CP references the account.
+6. Delete stale `CP:{card_number}` while retaining both lock tokens. Failure to
+   prove invalidation marks the movement `RECOVERY_REQUIRED` and WAL `FAILED`;
+   the autonomous worker retries from the immutable intent. Renew and verify
+   both lock tokens immediately before ledger submission.
 7. Commit `EXTERNAL_EFFECT_SUBMITTING` before calling TigerBeetle, then submit
    the deterministic transfer:
    - grant: debit `PROVIDER_OWNED`, credit the provider-user account
@@ -1771,13 +1845,15 @@ generic business failure.
    `APPLIED`, increment `card_state_version`, insert the mandatory CP-refresh
    outbox event and controlled provider-facing event, set WAL state
    `EVENT_PENDING`, write audit facts, and store the replayable command result.
-10. Attempt request-path Kafka publication. Broker-acknowledged or deliberately
-    `SUPPRESSED` provider events are terminal delivery outcomes. Once every
-    mandatory outbox event is broker-acknowledged, mark the WAL `COMPLETED` and
-    persist the final idempotent response.
+10. Return `202` after Oracle transaction B. The outbox relay asynchronously
+    publishes the internal refresh and, when delivery gates allow it, the
+    provider event. A deliberately `SUPPRESSED` provider event is terminal and
+    never blocks CP materialization.
 11. Wolfsburg consumes the internal refresh event, combines its canonical
     mapping/account snapshot with live TigerBeetle balances, emits the
-    materialization receipt, and releases the matching card lock.
+    materialization receipt, and releases the matching card lock. The valid
+    receipt changes financial WAL from `EXTERNAL_VERIFIED` to `COMPLETED`;
+    provider-event delivery is not a financial correctness dependency.
 
 The return transfer amount is never trusted from an event alone. The event/API
 value is an optimistic expectation; TigerBeetle under the lock is authoritative.
@@ -1799,19 +1875,37 @@ Kafka published, CP receipt missing      Wolfsburg reconciles/materializes CP
 Definitive TB rejection                  Mark failed; never pretend transfer applied
 ```
 
-The recovery worker claims WAL/outbox rows using bounded leases and Oracle
-`FOR UPDATE SKIP LOCKED`. It may repeat only deterministic TigerBeetle commands
-and immutable Kafka events. It must not generate replacement IDs, recalculate a
-historical return amount, or infer ledger success from Oracle/Redis.
+The autonomous WAL recovery worker claims eligible WAL rows using bounded
+leases and Oracle `FOR UPDATE SKIP LOCKED`. It waits for a configurable stale
+threshold before reclaiming in-flight work, retries with bounded exponential
+backoff and jitter, and moves exhausted work to a durable dead-letter state. It
+may repeat only deterministic TigerBeetle commands and immutable Kafka events.
+It must not generate replacement IDs, recalculate a historical return amount,
+or infer ledger success from Oracle/Dragonfly.
+
+Every recoverable WAL intent stores a minimal durable command context containing
+the operation type, idempotency key, trusted audit actor, request identifiers,
+and allowlisted internal trace context. It never stores JWTs, PAN, national ID,
+names, secrets, or unrestricted request bodies. Recovery creates a new worker
+span linked to the original trace and finalizes audit/idempotency using the
+persisted trusted actor.
+
+The implemented recovery types are provider-user account provisioning,
+issued-card account provisioning, and provider-credit movements. Credit
+recovery verifies the exact deterministic transfer and finalizes forward; it
+never recalculates a return amount. Issuance also has a separate completion pass:
+after every result row is terminal, it atomically completes the batch and the
+original result-upload idempotency record from the persisted batch command
+context. This closes the crash window between the final row and batch completion.
 
 Automatic financial compensation is prohibited. If the ledger effect exists,
 the system finalizes forward from WAL facts. Any exceptional reverse movement
 requires a separate explicit, idempotent, audited business command.
 
 For Oracle-only commands such as funding-order changes, no external-effect WAL
-is needed. Wurzburg still invalidates CP after final validation and commits the
-domain update, card-state-version increment, audit, and outbox insert in one
-Oracle transaction.
+is needed. Wurzburg commits the domain update, card-state-version increment,
+audit, integration operation, outbox event, and idempotency result in one Oracle
+transaction, then invalidates CP while retaining the shared lock for Wolfsburg.
 
 ### Idempotency And HTTP Completion
 
@@ -1869,10 +1963,21 @@ Required deployment configuration shape:
 
 ```toml
 [card_profile_lock]
-ttl_ms = 30000
-renew_interval_ms = 10000
-max_ownership_ms = 300000
-stale_alert_ms = 60000
+coordinator_enabled = true
+coordinator_batch_size = 200
+lease_duration_ms = 45000
+renew_interval_ms = 15000
+
+[wal_recovery]
+enabled = true
+worker_id = "wurzburg-financial-wal-recovery"
+batch_size = 20
+poll_interval_ms = 1000
+lease_duration_ms = 30000
+stale_after_ms = 120000
+max_attempts = 20
+initial_backoff_ms = 500
+max_backoff_ms = 60000
 
 [outbox]
 poll_interval_ms = 250
@@ -1931,6 +2036,8 @@ FUNDING_SOURCE_CHANGED
 CARD_STATUS_CHANGED
 CARD_REPLACED
 MUTATION_ABORTED
+PROVIDER_STATUS_CHANGED
+RECOVERY
 ```
 
 Internal event envelope:
@@ -1950,6 +2057,7 @@ Internal event envelope:
   "causation_id": "uuid-or-null",
   "occurred_at": "timestamp",
   "payload": {
+    "runtime_action": "UPSERT",
     "reason": "CREDIT_RETURNED",
     "provider_id": "uuid",
     "user_id": "uuid",
@@ -1958,9 +2066,12 @@ Internal event envelope:
 }
 ```
 
-Events contain identities, versions, and the complete balance-free account
-mapping needed for the projection, but never cached balances or a prebuilt
-Redis value. Wolfsburg reads current TigerBeetle state using those account IDs.
+Events contain identities, versions, `runtime_action`, and the complete
+balance-free account mapping needed for the projection, but never cached
+balances or a prebuilt Dragonfly value. `UPSERT` requires at least one active
+funding source and asks Wolfsburg to rebuild CP from live TigerBeetle state.
+`DELETE` requires an empty source list and asks Wolfsburg to remove CP while
+still emitting the normal materialization receipt.
 W3C `traceparent` and allowlisted `tracestate` are injected into internal Kafka
 headers and continued by Wolfsburg; they never enter provider-facing events.
 
@@ -2288,25 +2399,31 @@ Request:
 
 ```json
 {
+  "expected_card_state_version": 4,
   "sources": [
     {
       "provider_id": "uuid-1",
-      "max_amount": 1000000
+      "max_amount_rials": 1000000
     },
     {
       "provider_id": "uuid-2",
-      "max_amount": null
+      "max_amount_rials": null
     }
   ],
   "reason": "cardholder preference update"
 }
 ```
 
-Array order defines contiguous priorities starting at `1`. Every active funding
-provider must appear exactly once. `max_amount = null` means no cardholder cap;
-the CP runtime capacity is still limited by the live TigerBeetle balance. The
+Array order defines contiguous priorities starting at `1`. Every attached
+`ACTIVE` or `SUSPENDED` funding provider must appear exactly once so a temporary
+provider suspension does not erase the cardholder's preference. CP contains
+only active sources. `max_amount_rials = null` means no cardholder cap; the CP
+runtime capacity is still limited by the live TigerBeetle balance. The
 API acquires the shared CP lock and returns `409 CARD_PROFILE_LOCKED` without a
-DB change when the card is busy.
+DB change when the card is busy. `expected_card_state_version` is mandatory and
+prevents a stale UI or concurrent command from silently replacing a newer
+preference. A card with an earlier refresh awaiting Wolfsburg returns
+`409 CARD_PROFILE_PUBLICATION_PENDING`.
 
 Credit operations:
 
@@ -2378,21 +2495,22 @@ The trusted WSO2 `user_id` claim must own the card for the cardholder route.
 Neither route accepts an arbitrary return amount. The expected amount is an
 optimistic guard obtained from the authorized live-credit GET, prior API
 response, or provider event. Wurzburg returns the entire matching TigerBeetle
-balance or returns `409 PROVIDER_USER_BALANCE_CHANGED` without side effects.
+balance or returns `409 PROVIDER_CREDIT_BALANCE_CHANGED` without side effects.
 
 Successful response:
 
 ```json
 {
   "movement_id": "uuid",
+  "operation_id": "uuid",
   "movement_type": "GRANT",
   "provider_id": "uuid",
   "user_id": "uuid",
   "card_id": "uuid",
   "amount_rials": 1000000,
   "provider_reference": "provider-reference",
-  "status": "COMPLETED",
-  "event_publication_status": "PUBLISHED",
+  "command_status": "APPLIED",
+  "event_publication_status": "PENDING | SUPPRESSED",
   "profile_materialization_status": "PENDING",
   "created_at": "timestamp"
 }
@@ -2418,10 +2536,23 @@ created IDs, movement ID, centralized result code, and message.
 Transaction queries:
 
 ```text
+GET /api/v1/providers/{provider_id}/transactions
+GET /api/v1/providers/{provider_id}/users/{user_id}/transactions
 GET /api/v1/providers/{provider_id}/accounts/{account_category}/transactions
 GET /api/v1/providers/{provider_id}/cards/{card_number}/transactions
+GET /api/v1/users/{user_id}/transactions
+GET /api/v1/cards/{card_number}/transactions
+GET /api/v1/admin/transactions
 GET /api/v1/admin/cards/{card_number}/transactions
 ```
+
+Allowlisted filters are `transaction_type`, `occurred_from`, and
+`occurred_to`; the admin collection additionally supports exact `provider_id`,
+`user_id`, and normalized `card_number`. Collection order is
+`(occurred_at DESC, transaction_id DESC)`. `page_token` is an opaque,
+filter-and-visibility-bound keyset cursor; changing a filter, Provider, user,
+card, account category, or route invalidates it. Monetary values are returned
+as base-10 rial strings so reporting clients do not lose integer precision.
 
 Rules:
 
@@ -2794,9 +2925,11 @@ Headers for POST: Idempotency-Key
 ```
 
 Provider user onboarding, exact existing-card attachment, shared physical card
-issuance, bank batch processing, account provisioning, and CP command creation
-are implemented by the V004 slice. Bulk provider imports, reprint/replacement,
-funding-order mutation, and credit movement remain later slices.
+issuance, bank batch processing, account provisioning, CP command creation,
+cardholder funding-order mutation, provider lifecycle propagation, card-profile
+lock coordination, and autonomous onboarding/issuance WAL recovery are
+implemented. Bulk provider imports, reprint/replacement, and provider-user
+credit movement remain later slices.
 
 ## 15. API Response Contract
 
@@ -2844,9 +2977,12 @@ PROVIDER_CUSTOMER_REFERENCE_CONFLICT
 PROVIDER_USER_LIMIT_REACHED
 PROVIDER_CREDIT_GRANT_DISABLED
 PROVIDER_CREDIT_RETURN_DISABLED
-PROVIDER_USER_BALANCE_CHANGED
-PARTIAL_CREDIT_RETURN_NOT_ALLOWED
-PROVIDER_CREDIT_LIMIT_EXCEEDED
+PROVIDER_CREDIT_BALANCE_CHANGED
+PROVIDER_CREDIT_EMPTY
+PROVIDER_CREDIT_EXPOSURE_LIMIT_EXCEEDED
+PROVIDER_CREDIT_LOCKED
+PROVIDER_CREDIT_REFERENCE_CONFLICT
+PROVIDER_CREDIT_RECOVERY_REQUIRED
 PROVIDER_CARD_OPERATION_DISABLED
 CARD_PROFILE_LOCKED
 OPERATION_NOT_FOUND
@@ -2854,9 +2990,7 @@ OPERATION_RECOVERY_REQUIRED
 EVENT_PUBLICATION_PENDING
 ```
 
-## 16. Implementation Order
-
-Do not start with user credit or card funding transfers.
+## 16. Implementation Status And Order
 
 Wurzburg is Oracle-only. Use direct Oracle persistence modules behind
 application services; do not create database-neutral repository traits whose
@@ -2871,12 +3005,15 @@ src/domain/provider.rs
 src/domain/user_card.rs
 src/domain/card_issuance.rs
 src/domain/provider_event.rs
+src/domain/provider_credit.rs
 
 src/services/provider.rs
 src/services/provider_user.rs
 src/services/card_issuance.rs
 src/services/provider_fee.rs
 src/services/provider_event_subscription.rs
+src/services/provider_credit.rs
+src/services/wal_recovery.rs
 
 src/db/oracle/provider.rs
 src/db/oracle/provider_user.rs
@@ -2886,12 +3023,15 @@ src/db/oracle/card_profile.rs
 src/db/oracle/provider_fee.rs
 src/db/oracle/operation.rs
 src/db/oracle/outbox.rs
+src/db/oracle/provider_credit.rs
+src/db/oracle/wal_recovery.rs
 
 src/api/handlers/providers.rs
 src/api/handlers/provider_users.rs
 src/api/handlers/card_issuance.rs
 src/api/handlers/provider_fees.rs
 src/api/handlers/provider_events.rs
+src/api/handlers/provider_credits.rs
 
 src/object_storage/client.rs
 src/object_storage/bootstrap.rs
@@ -2915,18 +3055,16 @@ TigerBeetle and Kafka terminology remains in configuration, adapter internals,
 provider Kafka access, and telemetry so operational diagnostics never hide the
 actual dependency.
 
-Credit movement and recovery modules are added when that slice is implemented;
-their names are not predeclared as if production code already existed. Handler-
-local HTTP DTOs may remain beside their routes while domain commands and views
-remain in `src/domain`; a separate DTO directory is introduced only when actual
-cross-handler reuse justifies it.
+Handler-local HTTP DTOs may remain beside their routes while domain commands and
+views remain in `src/domain`; a separate DTO directory is introduced only when
+actual cross-handler reuse justifies it.
 
 Baseline migration files contain only this final schema. No compatibility
 ALTER/backfill is required for disposable draft tables; force rebuild recreates
 the schema from the clean baseline. Once the first shared environment adopts
 that baseline, normal forward-only migration discipline begins.
 
-Recommended order:
+Implementation order and current progress:
 
 1. Clean Oracle baseline migrations, Oracle persistence modules, application
    services, and common audit integration.
@@ -2944,10 +3082,15 @@ Recommended order:
    policy usage accounts.
 10. Shared CP lock/invalidation protocol and card-state refresh events.
 11. Credit grant/full-balance-return APIs with deterministic TigerBeetle
-    transfers.
-12. Transaction and live-ledger query APIs.
-13. Contract tests for Wurzburg events consumed by the future Wolfsburg
-    materializer.
+    transfers, provider/card locks, WAL recovery, CP refresh, and controlled
+    provider events. Implemented.
+12. Canonical provider/user/card/admin transaction query APIs and Wurzburg
+    credit transaction facts. Implemented; Wolfsburg population of verified
+    Nuremberg Confirm/Rollback/Fee facts remains.
+13. Bulk onboarding/credit files, replacement/reprint workflows, recovery
+    administration, and provider-event replay completion.
+14. Wolfsburg materialization and Nuremberg alignment against the final runtime
+    contracts.
 
 ## 17. Final Lifecycle And Audit Rules
 

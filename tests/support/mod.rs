@@ -63,6 +63,7 @@ pub struct TestJwtOptions {
     pub exp: usize,
     pub nbf: usize,
     pub provider_id: Option<uuid::Uuid>,
+    pub user_id: Option<uuid::Uuid>,
 }
 
 impl Default for TestJwtOptions {
@@ -76,6 +77,7 @@ impl Default for TestJwtOptions {
             exp: 2_000_000_000,
             nbf: 1_600_000_000,
             provider_id: None,
+            user_id: None,
         }
     }
 }
@@ -94,6 +96,7 @@ struct TestJwtClaims {
     roles: Vec<String>,
     scope: Vec<String>,
     provider_id: Option<uuid::Uuid>,
+    user_id: Option<uuid::Uuid>,
 }
 
 #[allow(dead_code)]
@@ -125,13 +128,42 @@ pub fn signed_platform_admin_without_audit_scope() -> String {
 
 #[allow(dead_code)]
 pub fn signed_provider_admin_jwt(provider_id: uuid::Uuid) -> String {
-    signed_test_jwt(
-        TestJwtOptions {
-            provider_id: Some(provider_id),
-            ..TestJwtOptions::default()
-        },
-        Algorithm::RS256,
+    let options = TestJwtOptions {
+        subject: format!("provider-admin-{provider_id}"),
+        provider_id: Some(provider_id),
+        ..TestJwtOptions::default()
+    };
+    let claims = TestJwtClaims {
+        iss: options.issuer,
+        aud: options.audience,
+        sub: options.subject,
+        azp: options.azp,
+        client_id: options.client_id,
+        exp: options.exp,
+        nbf: options.nbf,
+        iat: 1_600_000_000,
+        jti: uuid::Uuid::new_v4().to_string(),
+        roles: vec!["wurzburg_provider_admin".to_string()],
+        scope: vec![
+            "provider.users:read".to_string(),
+            "provider.users:write".to_string(),
+            "provider.cards:read".to_string(),
+            "provider.funding:read".to_string(),
+            "provider.funding:write".to_string(),
+            "provider.transactions:read".to_string(),
+            "provider.kafka_credentials:read".to_string(),
+            "provider.kafka_credentials:rotate".to_string(),
+            "provider.events:read".to_string(),
+        ],
+        provider_id: Some(provider_id),
+        user_id: None,
+    };
+    encode(
+        &Header::new(Algorithm::RS256),
+        &claims,
+        &EncodingKey::from_rsa_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("valid test RSA key"),
     )
+    .expect("test JWT should sign")
 }
 
 #[allow(dead_code)]
@@ -169,6 +201,7 @@ fn signed_test_jwt_with_scopes(
         roles: vec!["wurzburg_platform_admin".to_string()],
         scope: scopes,
         provider_id: options.provider_id,
+        user_id: options.user_id,
     };
 
     encode(
@@ -177,6 +210,42 @@ fn signed_test_jwt_with_scopes(
         &EncodingKey::from_rsa_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("valid test RSA key"),
     )
     .expect("test JWT should sign")
+}
+
+#[allow(dead_code)]
+pub fn signed_cardholder_jwt(user_id: uuid::Uuid) -> String {
+    let options = TestJwtOptions {
+        subject: format!("cardholder-{user_id}"),
+        user_id: Some(user_id),
+        ..TestJwtOptions::default()
+    };
+    let claims = TestJwtClaims {
+        iss: options.issuer,
+        aud: options.audience,
+        sub: options.subject,
+        azp: options.azp,
+        client_id: options.client_id,
+        exp: options.exp,
+        nbf: options.nbf,
+        iat: 1_600_000_000,
+        jti: uuid::Uuid::new_v4().to_string(),
+        roles: vec!["wurzburg_cardholder".to_string()],
+        scope: vec![
+            "card.funding-order:read".to_string(),
+            "card.funding-order:write".to_string(),
+            "card.credit:read".to_string(),
+            "card.credit:return".to_string(),
+            "card.transactions:read".to_string(),
+        ],
+        provider_id: None,
+        user_id: Some(user_id),
+    };
+    encode(
+        &Header::new(Algorithm::RS256),
+        &claims,
+        &EncodingKey::from_rsa_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("valid test RSA key"),
+    )
+    .expect("cardholder JWT should sign")
 }
 
 fn platform_admin_scopes() -> Vec<String> {
@@ -189,12 +258,17 @@ fn platform_admin_scopes() -> Vec<String> {
         "platform.fee_profiles:read".to_string(),
         "platform.providers:write".to_string(),
         "platform.providers:read".to_string(),
+        "platform.transactions:read".to_string(),
         "platform.audit:read".to_string(),
         "platform.card_issuance:read".to_string(),
         "platform.card_issuance:write".to_string(),
+        "platform.cards.funding-order:write".to_string(),
         "provider.users:read".to_string(),
         "provider.users:write".to_string(),
         "provider.cards:read".to_string(),
+        "provider.funding:read".to_string(),
+        "provider.funding:write".to_string(),
+        "provider.transactions:read".to_string(),
         "card.funding-order:read".to_string(),
         "support.cards:read".to_string(),
         "provider.kafka_credentials:read".to_string(),
@@ -221,6 +295,7 @@ pub fn signed_hs256_confusion_jwt() -> String {
         roles: vec!["wurzburg_platform_admin".to_string()],
         scope: vec!["platform.card_ranges:read".to_string()],
         provider_id: options.provider_id,
+        user_id: options.user_id,
     };
 
     encode(

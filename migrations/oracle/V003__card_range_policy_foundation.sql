@@ -39,7 +39,7 @@ CREATE TABLE card_ranges (
     ),
     CONSTRAINT fk_card_ranges_control_operation
         FOREIGN KEY (range_control_operation_id)
-        REFERENCES integration_outbox(operation_id)
+        REFERENCES integration_operations(operation_id)
         DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT ck_card_ranges_authority_calendar CHECK (
         (withdrawal_limit_authority = 'PLATFORM' AND limit_calendar_json IS JSON)
@@ -109,7 +109,7 @@ CREATE TABLE card_policy_profiles (
         REFERENCES card_policy_profiles(card_policy_profile_id),
     CONSTRAINT fk_cpp_publication_operation
         FOREIGN KEY (publication_operation_id)
-        REFERENCES integration_outbox(operation_id)
+        REFERENCES integration_operations(operation_id)
         DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT ck_cpp_status CHECK (
         status IN ('DRAFT', 'ACTIVE', 'SUPERSEDED')

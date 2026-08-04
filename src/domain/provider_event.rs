@@ -1,4 +1,40 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderEventEnvelope<T> {
+    pub event_id: Uuid,
+    pub event_type: String,
+    pub schema_version: u16,
+    pub occurred_at: DateTime<Utc>,
+    pub provider_id: Uuid,
+    pub subject: ProviderEventSubject,
+    pub data: T,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderEventSubject {
+    pub subject_type: String,
+    pub subject_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masked_card_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_customer_reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderMoneyMovementEventData {
+    pub currency: String,
+    pub amount_rials: String,
+    pub observed_remaining_credit_rials: String,
+    pub balance_observed_at: DateTime<Utc>,
+    pub initiated_by: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -103,7 +139,13 @@ impl ProviderEventType {
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderEventType;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::{
+        ProviderEventEnvelope, ProviderEventSubject, ProviderEventType,
+        ProviderMoneyMovementEventData,
+    };
 
     #[test]
     fn provider_event_catalog_round_trips_only_public_allowlisted_types() {
@@ -138,5 +180,43 @@ mod tests {
                 .schema_json(2)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn provider_money_event_cannot_serialize_internal_trace_context() {
+        let provider_id = Uuid::new_v4();
+        let payload = serde_json::to_string(&ProviderEventEnvelope {
+            event_id: Uuid::new_v4(),
+            event_type: ProviderEventType::CreditGranted.as_str().to_string(),
+            schema_version: 1,
+            occurred_at: Utc::now(),
+            provider_id,
+            subject: ProviderEventSubject {
+                subject_type: "PROVIDER_USER_CREDIT".to_string(),
+                subject_id: Uuid::new_v4(),
+                user_id: Some(Uuid::new_v4()),
+                card_id: Some(Uuid::new_v4()),
+                masked_card_number: Some("1111********2222".to_string()),
+                provider_customer_reference: Some("customer-1".to_string()),
+            },
+            data: ProviderMoneyMovementEventData {
+                currency: "IRR".to_string(),
+                amount_rials: "1000".to_string(),
+                observed_remaining_credit_rials: "1000".to_string(),
+                balance_observed_at: Utc::now(),
+                initiated_by: "PROVIDER".to_string(),
+            },
+        })
+        .unwrap();
+        for forbidden in [
+            "traceparent",
+            "tracestate",
+            "baggage",
+            "correlation_id",
+            "request_id",
+            "national_id",
+        ] {
+            assert!(!payload.contains(forbidden), "leaked field: {forbidden}");
+        }
     }
 }
